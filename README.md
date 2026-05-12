@@ -63,3 +63,13 @@ python main.py
 ```
 
 Training runs are saved under `runs/detect/size_N/`. A summary table is printed at the end and `results.json` contains the full metrics.
+
+
+## Remaining Questions
+
+What about a deterministic cropping mechanism ? Could we have a croco clip at an intersection or only on a perfect straight railway ?
+Are we looking at other railways ?
+
+For now, we will hypothesize that there could be a croco clip at an intersection, that we are looking for clips on other tracks and that the main tracks may be a bit uncentered. However, we will still crop to keep only the middle third of the image.
+
+Following these hypotheses, we can use Sliced Wasserstein distance to match the bg color and create synthetic data.
