@@ -1,131 +1,155 @@
-# Generic Image Description — Synthetic Rail Dataset
+# Synthetic Dataset Generation Specification
 
-## What this data is
+## Overview
 
-These are orthogonal (top-down) LiDAR point cloud images. The sensor fires laser
-pulses downward and records the height of whatever each pulse hits. That height is
-then mapped to a colour, so the image is essentially a **height map**, not a
-photograph. The camera angle is fixed and perfectly vertical — there is no
-perspective distortion, no shadows, no lighting variation.
-
----
-
-## Colour encoding (height → colour)
-
-| Colour | Height meaning |
-|---|---|
-| White | No return / missing data (sparse areas, edges of scan) |
-| Orange / brown | Ground level — ballast, soil, the main surface |
-| Dark red / deep brown | Slightly elevated above ballast — the rail head sits here |
-| Green | Clearly elevated above the rail plane — objects resting on or between the rails |
-
-This is the single most important structural fact for the model: **green means
-"something is sticking up above the rails."** The crocodile clip is green for
-exactly this reason.
+Images are orthogonal (top-down) LiDAR height-map projections of railway track.
+Colour encodes elevation above ground. The objective is to detect crocodile clips
+clamped between rails. This document specifies what to generate and what
+dataset configurations to produce.
 
 ---
 
-## Image layout
+## Image structure
 
-The track runs **horizontally across the full width** of the image. The two rails
-are centred vertically and occupy roughly the middle third of the image height.
-Above and below the rails is ballast, and further out the scan becomes sparse
-(white patches, edge noise).
+### Background
 
-There is no tilt — the rails are parallel to the horizontal axis. This is the
-result of the orthogonal rotation pre-processing that was applied to the raw scans.
+Dark reddish-brown, similar to the tone seen in the real samples. Not uniform —
+apply granular per-pixel noise plus low-frequency variation (coarser blobs) to
+mimic the irregular density of a real LiDAR point cloud over ballast. The texture
+should look roughly like rough gravel photographed from directly above and coloured
+in this palette.
 
----
+### Track layout
 
-## Ballast (background texture)
+- **Two parallel track sets** are present in most images. Each track set consists
+  of two parallel rails.
+- The tracks run **horizontally** across the full width of the image.
+- Track position and spacing are **roughly constant** across the dataset:
+  - The overall track band is roughly **vertically centred** in the image.
+  - The two track sets are separated by a fixed inter-track gap (ballast between them).
+  - Rail width and inter-rail spacing within each track set are consistent.
+  - Small random jitter (a few percent of image height) is acceptable to avoid
+    the model overfitting to a fixed pixel row — but do not vary it widely.
+- The tracks occupy roughly the **middle third** of the image height. Above and
+  below is ballast background.
 
-The dominant visual element. Orange-brown, granular, noisy — it looks like coarse
-static. The texture is not uniform: density and exact hue vary slightly across the
-image because the point cloud is denser in some areas. There are occasional white
-gaps where no points were returned.
+### Rails
 
-**For training:** the model needs to learn to ignore this texture. The more varied
-the synthetic ballast, the harder it is for the model to overfit to a specific
-pattern. Exact realism is not necessary — the key property is that it is
-orange-brown, granular, and covers the majority of the image.
+- Colour: **red** (slightly elevated above the ballast in the height map).
+- Intensity varies slightly along the rail — occasional short segments are a
+  touch brighter or darker than the surrounding rail, to reflect real scan
+  density variation. This is subtle; the rail should still read as a continuous line.
+- Rails are thin horizontal stripes, a few pixels thick.
 
----
+### Sleepers (ladder pattern)
 
-## Rails
+- **Black vertical traces** crossing both rails of each track set at regular
+  intervals, forming a ladder pattern.
+- Spacing and thickness have noise: not perfectly regular.
+- Some sleepers **blend into the background** (reduced opacity / lower contrast)
+  as if the LiDAR return was weak at that point.
+- Sleepers are visible only within the track band; they do not extend into the
+  open ballast beyond the rails.
 
-Two thin, continuous horizontal lines running the full width of the image. They
-appear as slightly darker and more saturated dark-red/brown compared to the
-surrounding ballast — this is because the rail head is a few centimetres above
-the ballast surface, pushing it into a different height band.
+### Switch point (optional)
 
-The rails are separated by roughly 10–15% of the image height (standard gauge
-track from above). They are parallel, straight, and at a constant vertical
-position.
+- In some images, the two track sets **converge or diverge** at a switch point
+  visible within the frame — multiple tracks meeting at a junction.
+- When a switch point is present, one or more additional partial rail lines
+  appear diagonally, connecting one track set to the other.
+- This should appear in a minority of images (not the default case).
 
-**For training:** the rail lines are the primary spatial anchor — the model needs
-to learn that the object of interest lives *between* them. Rail colour contrast
-against ballast is mild; the exact shade is less important than the geometry
-(two parallel horizontal lines).
+### Noise elements
 
----
-
-## Sleepers (ties)
-
-Dark transverse stripes crossing both rails at regular intervals, perpendicular
-to the rail direction. They are slightly darker than the ballast and create a
-regular "ladder" pattern along the track. Spacing is roughly every 3–5% of image
-width.
-
-**For training:** sleepers are background clutter. The model should learn to ignore
-them. However, their presence helps break the visual uniformity of the ballast and
-prevents the model from relying on a perfectly flat background — worth including in
-synthetic images.
-
----
-
-## Crocodile clip (the object to detect)
-
-Present in one image only (image 0). Located **between the two rails**, roughly
-in the upper-centre of the inter-rail zone.
-
-Appearance:
-- **Colour: mostly red with scattered green dots** — the clip body sits at roughly
-  rail height (red/dark-red in the height map), with a few green pixels concentrated
-  toward the centre where the clip's contact points or spring mechanism protrude
-  slightly higher. It is NOT a uniform green object.
-- **Shape: small elongated rectangle**, oriented roughly perpendicular to the rail
-  direction (i.e. it crosses from one rail toward the other). A few pixels wide and
-  maybe 10–20 pixels tall at the image resolutions seen.
-- A thin **wire or cable** may extend from the clip upward (toward the top of the
-  image), very narrow (1–2 px). This may or may not be present depending on how
-  the clip is installed.
-
-**For training — what matters most:**
-1. **Its position between the two rails.** This is now the primary discriminating
-   feature. The colour signature (red body + green specks) blends with the
-   surrounding rail colours and is not reliably distinctive on its own.
-2. The combination of red + a few green dots in the inter-rail zone. A red-only
-   or green-only object at that location is ambiguous; the mixed signature is more
-   specific to the clip.
-3. The small physical size relative to the image. At 640 px the clip occupies
-   perhaps 0.5–2% of image area — YOLO's small-object detection needs enough
-   examples to handle this.
-
-**What matters less:**
-- The exact shape of the clip body (rectangle is fine).
-- The wire/cable extending from it (adds realism but is not the distinctive feature).
-- The exact proportion of green vs red — it varies clip to clip.
+A small number of **random scattered shapes** appear across the image, including
+in the inter-rail zones. These are hard negatives — the model must learn to ignore
+them:
+- Shapes can be **green** (elevated debris / vegetation) or **red** (objects at
+  rail height).
+- They are irregular blobs or small rectangles, randomly sized and placed.
+- Keep their count low (not too many per image) so they do not clutter the scene
+  but do provide genuine ambiguity for the model.
 
 ---
 
-## Other green objects (noise)
+## Crocodile clip
 
-In images 2–4, small scattered green blobs appear throughout the ballast zone.
-These are vegetation (weeds, grass) or small debris elevated above ground level.
-They are visually similar in colour to the clip but differ in shape (rounder,
-more irregular) and location (outside the inter-rail zone).
+### Appearance
 
-**For training:** these are the hard negatives. The model must learn to
-distinguish "green blob between the rails" from "green blob outside the rails."
-Including them in synthetic images is important — without them the model can cheat
-by flagging any green pixel regardless of position.
+- Present in **a minority of images** (proportion depends on the dataset
+  configuration, see below).
+- **Colour:** predominantly **red** body (same height band as the rails),
+  with a random proportion of **green pixels concentrated toward the centre**
+  — these represent the contact points or spring mechanism that protrude slightly
+  higher than the body.
+- **Shape:** a horizontal rectangle — long and narrow — oriented **along** the
+  rail direction (i.e. wider than tall, running left-right).
+- **Length:** approximately **1/8th of the image width**.
+- **Position:** well centred within the inter-rail zone of whichever track set it
+  is placed in (vertically, it sits between the two rails of that set; horizontally,
+  it is centred in the image with some small random jitter).
+
+### Placement rules
+
+The clip can be placed in:
+- The **upper track set** (the track set closer to the top of the image), or
+- The **lower track set**, or
+- One of the tracks of a **switch point** (if one is present in the image).
+
+Which of these is allowed depends on the dataset configuration (see below).
+
+---
+
+## Dataset configurations
+
+Six configurations are defined. Each is a separate generated split with its own
+parameters. They are designed to test different aspects of model robustness.
+
+### 1. `test_sparse`
+- **Purpose:** evaluation set with realistic low clip prevalence.
+- Two track sets, no switch points.
+- Very few clips (~10% of images have a clip).
+- Many true negatives — tests the model's false-positive rate.
+
+### 2. `test_dense`
+- **Purpose:** evaluation set for measuring detection rate under high prevalence.
+- Two track sets, no switch points.
+- Higher clip proportion (~50% of images have a clip).
+- Tests sensitivity / recall.
+
+### 3. `train_two_tracks`
+- **Purpose:** simplest training baseline — clean, predictable geometry.
+- Always exactly two track sets, no switch points.
+- Clip present in ~30% of images.
+- Clip can be in either track set.
+
+### 4. `train_with_switches`
+- **Purpose:** teach the model to handle more complex track geometry.
+- Two track sets in all images, switch point present in a minority (~20%).
+- Clip present in ~30% of images.
+- Clip can be in any track set including the switch tracks.
+
+### 5. `train_upper_only`
+- **Purpose:** ablation — clip is restricted to the upper track set.
+- Two track sets, no switch points.
+- Clip present in ~30% of images.
+- Clip is **only ever placed in the upper track set**.
+- Used to test whether restricting placement helps or hurts generalisation.
+
+### 6. `train_any_track`
+- **Purpose:** generalisation training — clip position is fully randomised.
+- Two track sets, no switch points.
+- Clip present in ~30% of images.
+- Clip is placed in the upper or lower track set with equal probability.
+
+---
+
+## Notes for implementation
+
+- All images are square, 640 × 640 px (matches YOLO's default input size directly).
+- YOLO labels: normalised centre-x, centre-y, width, height (`0 cx cy w h`).
+- An empty label file means the image is a true negative (no clip).
+- The dataset cache check (skip regeneration if files already exist) should be
+  per-configuration so regenerating one config does not invalidate others.
+- The clip bounding box covers the **clip body only**, not any wire or cable that
+  may extend from it.
