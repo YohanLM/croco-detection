@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 
-def load_synthetic_rails(output_dir, n_samples=600, img_size=256, p_object=0.8, seed=42):
+def load_synthetic_rails(output_dir, n_samples=700, img_size=256, p_object=0.8, seed=42):
     output_dir = Path(output_dir)
     images_dst = output_dir / "images"
     labels_dst = output_dir / "labels"
