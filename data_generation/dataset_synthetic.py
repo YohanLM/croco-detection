@@ -50,15 +50,14 @@ RED_NOISE_RGB  = np.array([200, 70, 25], dtype=np.float32)   # Red speckle on ba
 # image_description.md. clip_tracks controls which track sets can host the
 # clip; p_switch controls how often a switch point appears.
 CONFIGS = {
-    "test_sparse":         {"p_clip": 0.10, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    "test_dense":          {"p_clip": 0.50, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    "train_two_tracks":    {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    "train_with_switches": {"p_clip": 0.30, "p_switch": 0.20, "clip_tracks": ("upper", "lower")},
-    "train_upper_only":    {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper",)},
-    "train_any_track":     {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    # Low-prevalence mix: 15% clips, 5% switches, clip in either track set.
-    # Used by main.py for the realistic train/eval experiment.
-    "experiment_15c_5s":   {"p_clip": 0.15, "p_switch": 0.05, "clip_tracks": ("upper", "lower")},
+    "test_sparse":         {"p_clip": 0.10, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "test_dense":          {"p_clip": 0.50, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "train_two_tracks":    {"p_clip": 0.30, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "train_with_switches": {"p_clip": 0.30, "p_switch": 0.20, "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "train_upper_only":    {"p_clip": 0.30, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper",)},
+    "train_any_track":     {"p_clip": 0.30, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "experiment_15c_5s":   {"p_clip": 0.15, "p_switch": 0.05, "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "c30_m15":             {"p_clip": 0.30, "p_switch": 0.0,  "p_motif": 0.15, "clip_tracks": ("upper", "lower")},
 }
 
 
@@ -223,7 +222,7 @@ def _draw_rails(rng, img, rails):
         img[y0:y1] = np.clip(blended, 0, 255).astype(np.uint8)
 
 
-def _add_rail_motifs(rng, img, rails):
+def _add_rail_motifs(rng, img, rails, p_motif=0.05):
     """Small markings on top of the rails — brighter/darker pixel clusters."""
     h, w = img.shape[:2]
     for y0, y1 in rails:
@@ -497,10 +496,7 @@ def _add_inter_rail_features(rng, img, rails):
             colour = GREEN_RGB if rng.random() < 0.5 else RED_NOISE_RGB
             _draw_blob(rng, img, dx, dy, dr, colour)
 
-    # Rare clip-like motifs — 5% of images. When triggered, place a pair of
-    # the same motif type in one inter-rail zone, separated horizontally,
-    # potentially overlapping the image edge.
-    if rng.random() < 0.05:
+    if rng.random() < p_motif:
         # Choose which inter-rail zone
         top_rail, bot_rail = (
             (rails[0], rails[1]) if rng.random() < 0.5 else (rails[2], rails[3])
@@ -640,7 +636,7 @@ def _make_image(rng, config):
     # 5. Main rails
     _draw_rails(rng, img, rails)
     # 6. Rail motifs on top of rails
-    _add_rail_motifs(rng, img, rails)
+    _add_rail_motifs(rng, img, rails, p_motif=config.get("p_motif", 0.05))
     # 7. Inter-rail hard negatives
     _add_inter_rail_features(rng, img, rails)
 

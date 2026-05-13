@@ -10,21 +10,21 @@ Two input layouts are supported automatically:
   - **YOLO dataset** — `<src>/images/*.png` and `<src>/labels/*.txt`.
     Mirrored into `<dst>/images/` (greyscale) and `<dst>/labels/` (verbatim).
   - **Flat folder** — any directory containing `*.png` directly (e.g. the
-    `preview/` and `preview_square/` directories). All PNGs are converted
-    into the destination directory.
+    `previews/preview/` and `previews/preview_square/` directories). All PNGs
+    are converted into the destination directory.
 
 The script is idempotent: if `<dst>` already contains a converted copy
 matching the source layout, it just overwrites — no stateful caching, since
 the conversion is so cheap.
 
 Usage:
-    python make_greyscale.py <src_dir> <dst_dir>
+    python data_generation/make_greyscale.py <src_dir> <dst_dir>
 
 Examples:
-    python make_greyscale.py preview preview_grey
-    python make_greyscale.py preview_square preview_square_grey
-    python make_greyscale.py data/dataset/experiment_15c_5s \\
-                             data/dataset/experiment_15c_5s_grey
+    python data_generation/make_greyscale.py previews/preview previews/preview_grey
+    python data_generation/make_greyscale.py previews/preview_square previews/preview_square_grey
+    python data_generation/make_greyscale.py experiments/sq_c30_m15_col/dataset \\
+                                             experiments/sq_c30_m15_grey/dataset
 """
 
 import shutil

@@ -1,14 +1,12 @@
 """Train YOLO on increasingly large subsets of the dataset and compare metrics.
 
-Pluggable loader: swap `load_dataset` for any function with the
-`dataset_loader` interface to run the same experiment on a different dataset.
-
 Run with: `python main.py` (inside an active venv).
-The synthetic dataset is generated on first run and cached for later runs.
+Pick which experiment to run by changing the last line: run(test1) / run(test2) / run(test3).
 """
 
 import json
 import random
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -17,114 +15,164 @@ from dotenv import load_dotenv
 from ultralytics import YOLO
 
 from data_generation.dataset_synthetic import load_synthetic_rails
+from data_generation.dataset_synthetic_square import load_synthetic_rails_square
+from data_generation.make_greyscale import convert as convert_to_greyscale
 
-# Load KAGGLE_USERNAME and KAGGLE_KEY from .env so kagglehub can authenticate
 load_dotenv()
 
-# ── Dataset config ────────────────────────────────────────────────────────────
-# Synthetic mix: 15% of images contain a crocodile clip, 5% contain a switch
-# point, and the clip may be placed in either the upper or the lower track set.
-# See `image_description.md` and CONFIGS in dataset_synthetic.py.
-SYNTHETIC_CONFIG = "experiment_15c_5s"
-N_SAMPLES = 4000     # total images generated for the split (train + test pool)
-
-# ── Pluggable dataset loader ──────────────────────────────────────────────────
-# Bound to the synthetic loader with the experiment config preset. To switch
-# datasets (e.g. the kaggle pothole one), replace this line with another loader
-# that accepts (output_dir) and returns {images_dir, labels_dir, classes}.
-load_dataset = partial(load_synthetic_rails, config=SYNTHETIC_CONFIG, n_samples=N_SAMPLES)
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-DATA_DIR = Path("data/dataset")   # synthetic images/labels go under here (per-config subdir)
-WORK_DIR = Path("data/splits")    # train_N.txt, test.txt and YAML files go here
-RESULTS_FILE = Path("results.json")
-# Force YOLO to write training runs inside *this* project, regardless of any
-# stale absolute paths cached in ~/Library/Application Support/Ultralytics/settings.json.
-RUNS_DIR = Path(__file__).resolve().parent / "runs" / "detect"
-
-# ── Experiment config ─────────────────────────────────────────────────────────
-# Dense at the low end (where the curve is steepest), log-spaced higher up,
-# one large run to verify the plateau. Total wall time on a base M2 with
-# DEVICE="mps" should sit around 80–110 min including dataset generation.
-SUBSET_SIZES = [50, 100, 200, 400, 800, 1600, 2800]
-TEST_RATIO = 0.2    # 20 % of the dataset is held out as a fixed test set
-EPOCHS = 25
-IMGSZ = 640         # longest-side target; rect=True keeps the 570x100 aspect ratio
-DEVICE = "mps"      # Apple Silicon GPU; use "cpu" or "0" (CUDA) on other machines
-SEED = 42           # fixes shuffle so every run produces the same splits
-WEIGHTS = "yolo11n.pt"  # nano variant — smallest and fastest YOLO11
+# ── Shared training constants ─────────────────────────────────────────────────
+EPOCHS     = 25
+IMGSZ      = 640
+DEVICE     = "mps"       # Apple Silicon GPU; use "cpu" or "0" (CUDA) on other machines
+SEED       = 42
+WEIGHTS    = "yolo11n.pt"
+TEST_RATIO = 0.2
 
 
-def main():
+# ── Experiment configs ────────────────────────────────────────────────────────
+
+@dataclass
+class Config:
+    run_name:    str
+    use_square:  bool        # True = 640×640 square; False = 570×100 rectangular
+    use_grey:    bool        # True = convert colour images to greyscale before training
+    syn_config:  str         # key into CONFIGS in dataset_synthetic*.py
+    n_samples:   int
+    subset_sizes: list[int]
+    data_source: Path | None = None  # None = generate fresh; Path = reuse existing dataset
+
+
+def test1() -> Config:
+    """Main run — full learning curve on square colour images."""
+    return Config(
+        run_name     = "sq_c30_m15_col",
+        use_square   = True,
+        use_grey     = False,
+        syn_config   = "c30_m15",   # p_clip=0.30, p_motif=0.15
+        n_samples    = 4000,
+        subset_sizes = [100, 200, 400, 800, 1600, 2800],
+        data_source  = None,
+    )
+
+
+def test2() -> Config:
+    """Spot-check — rectangular (cropped) images, two sizes only."""
+    return Config(
+        run_name     = "rect_c30_m15_col",
+        use_square   = False,
+        use_grey     = False,
+        syn_config   = "c30_m15",
+        n_samples    = 4000,
+        subset_sizes = [200, 800],
+        data_source  = None,
+    )
+
+
+def test3() -> Config:
+    """Spot-check — greyscale square images, reuses test1's generated data."""
+    return Config(
+        run_name     = "sq_c30_m15_grey",
+        use_square   = True,
+        use_grey     = True,
+        syn_config   = "c30_m15",
+        n_samples    = 4000,
+        subset_sizes = [200, 800],
+        data_source  = Path("experiments/sq_c30_m15_col/dataset"),
+    )
+
+
+# ── Training logic ────────────────────────────────────────────────────────────
+
+def run(cfg: Config) -> None:
+    run_dir      = Path("experiments") / cfg.run_name
+    work_dir     = run_dir / "splits"
+    results_file = run_dir / "results.json"
+    runs_dir     = run_dir / "detect"
+
+    loader = load_synthetic_rails_square if cfg.use_square else load_synthetic_rails
+    load_dataset = partial(loader, config=cfg.syn_config, n_samples=cfg.n_samples)
+
     # ── 1. Prepare the dataset ────────────────────────────────────────────────
-    # Downloads if needed, converts XML → YOLO .txt, symlinks images.
-    info = load_dataset(DATA_DIR)
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = cfg.data_source if cfg.data_source is not None else run_dir / "dataset"
+    if cfg.data_source is not None:
+        info = {
+            "images_dir": cfg.data_source / "images",
+            "labels_dir": cfg.data_source / "labels",
+            "classes": ["clip"],
+        }
+    else:
+        info = load_dataset(data_dir)
+
+    if cfg.use_grey:
+        grey_dir = data_dir.parent / (data_dir.name + "_grey")
+        convert_to_greyscale(data_dir, grey_dir)
+        info = {**info, "images_dir": grey_dir / "images"}
+
+    work_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 2. Build a fixed train/test split ─────────────────────────────────────
-    # Only keep images that have a matching label file.
     images = sorted(
         p for p in info["images_dir"].iterdir()
         if (info["labels_dir"] / (p.stem + ".txt")).exists()
     )
-    random.Random(SEED).shuffle(images)  # same order every run
+    random.Random(SEED).shuffle(images)
 
-    n_test = int(len(images) * TEST_RATIO)
-    test_set = images[:n_test]           # fixed test set — never used for training
-    train_pool = images[n_test:]         # everything else is the training pool
+    n_test     = int(len(images) * TEST_RATIO)
+    test_set   = images[:n_test]
+    train_pool = images[n_test:]
     print(f"Total: {len(images)} | Test: {len(test_set)} | Train pool: {len(train_pool)}")
 
-    # Write the test set image paths to a file (ultralytics reads these)
-    test_file = WORK_DIR / "test.txt"
+    test_file = work_dir / "test.txt"
     test_file.write_text("\n".join(str(p.resolve()) for p in test_set))
 
     # ── 3. Train once per subset size ─────────────────────────────────────────
     results = []
-    for size in SUBSET_SIZES:
+    for size in cfg.subset_sizes:
         if size > len(train_pool):
             print(f"Skipping size={size}: only {len(train_pool)} train images available")
             continue
 
-        # Subsets are nested: train_20 contains the same 10 images as train_10
-        # plus 10 new ones. This makes the comparison fair.
-        train_file = WORK_DIR / f"train_{size}.txt"
+        train_file = work_dir / f"train_{size}.txt"
         train_file.write_text("\n".join(str(p.resolve()) for p in train_pool[:size]))
 
-        # YOLO expects a YAML file describing the dataset (paths + class names)
-        yaml_path = WORK_DIR / f"dataset_{size}.yaml"
+        yaml_path = work_dir / f"dataset_{size}.yaml"
         yaml_path.write_text(yaml.dump({
-            "path": str(WORK_DIR.resolve()),
+            "path": str(work_dir.resolve()),
             "train": train_file.name,
-            "val": test_file.name,   # evaluate on the held-out test set
+            "val":   test_file.name,
             "names": {i: c for i, c in enumerate(info["classes"])},
         }))
 
         print(f"\n=== Training with {size} images ===")
-        model = YOLO(WEIGHTS)   # fresh pretrained weights for each run
+        model = YOLO(WEIGHTS)
         model.train(
-            data=str(yaml_path),
-            epochs=EPOCHS,
-            imgsz=IMGSZ,
-            device=DEVICE,
-            project=str(RUNS_DIR),  # force into croco_detection/runs/detect/
-            name=f"size_{size}",    # run saved to {project}/size_N/
-            exist_ok=True,          # overwrite previous run with the same name
-            seed=SEED,
-            rect=True,              # rectangular training: pads to 640x128 instead of 640x640
+            data     = str(yaml_path),
+            epochs   = EPOCHS,
+            imgsz    = IMGSZ,
+            device   = DEVICE,
+            project  = str(runs_dir.resolve()),
+            name     = f"size_{size}",
+            exist_ok = True,
+            seed     = SEED,
+            rect     = not cfg.use_square,
         )
 
-        # Evaluate on the held-out test set — keep val runs in the same place
-        metrics = model.val(data=str(yaml_path), device=DEVICE,
-                            project=str(RUNS_DIR), name=f"size_{size}_val", exist_ok=True)
+        metrics = model.val(
+            data     = str(yaml_path),
+            device   = DEVICE,
+            project  = str(runs_dir.resolve()),
+            name     = f"size_{size}_val",
+            exist_ok = True,
+        )
         results.append({
-            "size": size,
-            "mAP@.5":     float(metrics.box.map50),  # IoU threshold = 0.5
-            "mAP@.5:.95": float(metrics.box.map),    # averaged over IoU 0.5–0.95
+            "size":         size,
+            "mAP@.5":       float(metrics.box.map50),
+            "mAP@.5:.95":   float(metrics.box.map),
             "inference_ms": float(metrics.speed.get("inference", 0.0)),
         })
 
-        # Save after each run so results aren't lost if the script is interrupted
-        RESULTS_FILE.write_text(json.dumps(results, indent=2))
+        results_file.write_text(json.dumps(results, indent=2))
 
     # ── 4. Print summary table ────────────────────────────────────────────────
     print(f"\n{'Size':>6} {'mAP@.5':>10} {'mAP@.5:.95':>12} {'Inf (ms)':>10}")
@@ -133,4 +181,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run(test1())   # ← change to test2() or test3() to switch experiments

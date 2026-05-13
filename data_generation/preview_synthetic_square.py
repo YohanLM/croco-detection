@@ -40,8 +40,8 @@ def _save(pil, name, out_dir, bbox=None):
 
 
 def main():
-    out_dir = Path("preview_square")
-    out_dir.mkdir(exist_ok=True)
+    out_dir = Path(__file__).resolve().parent.parent / "previews" / "preview_square"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     rng = np.random.default_rng(seed=123)
 

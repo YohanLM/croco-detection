@@ -55,11 +55,12 @@ RED_PATCH_RGB = np.array([170, 60, 25],  dtype=np.float32)   # rocky red blobs
 # rates, but applied to the square layout. The defaults are tuned for a
 # realistic mix of surroundings.
 CONFIGS = {
-    "test_sparse":          {"p_clip": 0.10, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    "test_dense":           {"p_clip": 0.50, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    "train_two_tracks":     {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
-    "train_with_switches":  {"p_clip": 0.30, "p_switch": 0.20, "clip_tracks": ("upper", "lower")},
-    "experiment_15c_5s":    {"p_clip": 0.15, "p_switch": 0.05, "clip_tracks": ("upper", "lower")},
+    "test_sparse":          {"p_clip": 0.10, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "test_dense":           {"p_clip": 0.50, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "train_two_tracks":     {"p_clip": 0.30, "p_switch": 0.0,  "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "train_with_switches":  {"p_clip": 0.30, "p_switch": 0.20, "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "experiment_15c_5s":    {"p_clip": 0.15, "p_switch": 0.05, "p_motif": 0.05, "clip_tracks": ("upper", "lower")},
+    "c30_m15":              {"p_clip": 0.30, "p_switch": 0.0,  "p_motif": 0.15, "clip_tracks": ("upper", "lower")},
 }
 
 
@@ -414,7 +415,7 @@ def _make_image_square(rng, config):
 
     ds._draw_sleepers(rng, img, rails)
     ds._draw_rails(rng, img, rails)
-    ds._add_rail_motifs(rng, img, rails)
+    ds._add_rail_motifs(rng, img, rails, p_motif=config.get("p_motif", 0.05))
     ds._add_inter_rail_features(rng, img, rails)
 
     bbox = None
