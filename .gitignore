@@ -3,3 +3,5 @@ data
 runs
 yolo11n.pt
 preview
+prev_results/data_copy
+prev_results/detect

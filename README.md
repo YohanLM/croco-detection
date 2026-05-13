@@ -65,6 +65,30 @@ python main.py
 Training runs are saved under `runs/detect/size_N/`. A summary table is printed at the end and `results.json` contains the full metrics.
 
 
+## Analysis
+
+`results.json` only summarises scalar metrics. To pick a sensible operating point we also read the per-confidence-threshold curves Ultralytics drops into each `runs/detect/size_N_val/`:
+
+| File | Curve |
+|---|---|
+| `BoxF1_curve.png` | F1 vs confidence |
+| `BoxP_curve.png`  | Precision vs confidence |
+| `BoxR_curve.png`  | Recall vs confidence |
+| `BoxPR_curve.png` | Precision-Recall (area = AP@.5) |
+
+For each training size we read off:
+
+- the **max F1** value and the confidence threshold at which it occurs,
+- the **precision and recall implied at that same threshold** (cross-read from the P and R curves),
+- how steeply the curves move either side of the optimum — i.e. how forgiving the threshold choice is.
+
+The max-F1 point is the natural balanced default. Whether we actually want to sit there depends on the use case:
+
+- **Maximise recall** if missing a clip is costly (screening with human-in-the-loop QA) — we accept more false positives.
+- **Maximise precision** if false positives are costly (autonomous flagging / downstream automation) — we accept missing some clips.
+
+At small training sizes the curves are choppy (few positive examples → noisy thresholds). Comparing the max-F1 value and its confidence position across sizes tells us when the operating point stabilises — that's the sample-efficiency signal we ultimately care about.
+
 ## Remaining Questions
 
 What about a deterministic cropping mechanism ? Could we have a croco clip at an intersection or only on a perfect straight railway ?

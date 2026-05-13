@@ -16,7 +16,6 @@ import yaml
 from dotenv import load_dotenv
 from ultralytics import YOLO
 
-from dataset_pothole import load_kaggle_pothole
 from dataset_synthetic import load_synthetic_rails
 
 # Load KAGGLE_USERNAME and KAGGLE_KEY from .env so kagglehub can authenticate
