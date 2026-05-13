@@ -1,18 +1,19 @@
 """Synthetic rails dataset.
 
 Procedurally generates orthogonal LiDAR-style top-down rail images that mimic
-the real point-cloud projections in `real_samples/`. See `image_description.md`
-for the visual specification this generator targets.
+the real point-cloud projections in `real_samples_cropped/`. Images are
+570x100 — the same size as the cropped real samples — and contain two parallel
+rail tracks (4 rails total) running horizontally.
 
-With probability `p_clip` a green "crocodile clip" is placed between the two
-rails — that rectangle is the bounding box YOLO must learn to detect.
+With probability `p_clip` a crocodile clip is placed between the two rails of
+one of the track sets — that rectangle is the bounding box YOLO must learn to
+detect.
 
-Implementation choice: numpy + PIL. We only generate up to ~2000 images and the
-math is simple per-pixel array work, so torch's GPU machinery would add weight
-without speeding anything meaningful up.
+See `image_description.md` for the visual specification this generator targets.
 
 Public loader (matches the project's dataset interface):
-    f(output_dir) -> {"images_dir": Path, "labels_dir": Path, "classes": list[str]}
+    f(output_dir, config=..., n_samples=..., seed=...)
+        -> {"images_dir": Path, "labels_dir": Path, "classes": list[str]}
 """
 
 from pathlib import Path
@@ -22,272 +23,519 @@ from PIL import Image
 
 
 # --------------------------------------------------------------------------- #
-# Colour palette
+# Image dimensions
 # --------------------------------------------------------------------------- #
-# Each colour represents a height band in the source LiDAR data, NOT a real
-# material colour. See image_description.md for the mapping.
-# Stored as float32 so we can add noise without integer overflow before clipping.
+IMG_W = 570
+IMG_H = 100
 
-WHITE = np.array([255, 255, 255], dtype=np.uint8)         # No-data (no LiDAR return)
-BALLAST_RGB = np.array([155, 90, 45], dtype=np.float32)   # Ground level
-RAIL_RGB = np.array([105, 45, 30], dtype=np.float32)      # Just above ground (rail head)
-SLEEPER_RGB = np.array([75, 40, 25], dtype=np.float32)    # Darker brown stripes
-GREEN_RGB = np.array([65, 140, 55], dtype=np.float32)     # Elevated vegetation/debris
-CLIP_BODY_RGB = np.array([145, 50, 35], dtype=np.float32) # Clip body — red, at rail height
-CLIP_DOT_RGB = np.array([60, 160, 55], dtype=np.float32)  # Clip contact points — green, higher
+# Base top-edge y positions for the four rails (anchored at top of image).
+# Top-to-top spacings: 25, 37, 25.
+RAIL_TOPS = (2, 27, 64, 89)
 
 
 # --------------------------------------------------------------------------- #
-# Layer builders — each one mutates the image array in place
+# Colour palette — derived from analysis of the real samples
+# --------------------------------------------------------------------------- #
+BACKGROUND_RGB = np.array([93, 46, 1],   dtype=np.float32)   # Dark reddish-brown ballast
+RAIL_RGB       = np.array([244, 134, 23], dtype=np.float32)  # Bright orange-red rails
+SLEEPER_RGB    = np.array([8, 6, 3],     dtype=np.float32)   # Near-black sleepers
+GREEN_RGB      = np.array([60, 160, 55], dtype=np.float32)   # Green clip dot / debris
+RED_NOISE_RGB  = np.array([200, 70, 25], dtype=np.float32)   # Red speckle on ballast
+
+
+# --------------------------------------------------------------------------- #
+# Dataset configurations
+# --------------------------------------------------------------------------- #
+# Each config is a separate generated split. Six configurations defined in
+# image_description.md. clip_tracks controls which track sets can host the
+# clip; p_switch controls how often a switch point appears.
+CONFIGS = {
+    "test_sparse":         {"p_clip": 0.10, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
+    "test_dense":          {"p_clip": 0.50, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
+    "train_two_tracks":    {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
+    "train_with_switches": {"p_clip": 0.30, "p_switch": 0.20, "clip_tracks": ("upper", "lower")},
+    "train_upper_only":    {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper",)},
+    "train_any_track":     {"p_clip": 0.30, "p_switch": 0.0,  "clip_tracks": ("upper", "lower")},
+    # Low-prevalence mix: 15% clips, 5% switches, clip in either track set.
+    # Used by main.py for the realistic train/eval experiment.
+    "experiment_15c_5s":   {"p_clip": 0.15, "p_switch": 0.05, "clip_tracks": ("upper", "lower")},
+}
+
+
+# --------------------------------------------------------------------------- #
+# Geometry
 # --------------------------------------------------------------------------- #
 
-def _ballast_texture(rng, size):
-    """Build the orange-brown granular ballast that fills the whole image.
+def _pick_geometry(rng):
+    """Pick the rail row positions and thickness for this image.
 
-    Combines two scales of noise so the texture doesn't look like uniform static:
-      * fine per-pixel chromatic noise — the "grain" you see up close
-      * coarse block noise — broad regions are slightly brighter or darker,
-        mimicking how LiDAR point density varies across the scan
+    Returns: list of (y0_inclusive, y1_exclusive) per rail, and a nominal rail
+    thickness. A global y-shift plus small per-rail jitter give variance while
+    preserving the overall ladder structure. Individual rail thickness can also
+    vary slightly so not every rail is the same height.
     """
-    h = w = size
-    fine = rng.normal(0, 22, size=(h, w, 3))
+    nominal_t = int(rng.choice([2, 3]))
+    shift = int(rng.integers(-2, 3))   # -2..+2
+    rails = []
+    for top in RAIL_TOPS:
+        jitter = int(rng.integers(-2, 3))   # per-rail jitter -2..+2
+        y0 = max(0, top + shift + jitter)
+        # Allow occasional thicker rails (3 px when nominal is 2, etc.)
+        rt = nominal_t + (1 if rng.random() < 0.25 else 0)
+        rt = max(2, min(3, rt))
+        y1 = min(IMG_H, y0 + rt)
+        rails.append((y0, y1))
+    return rails, nominal_t
 
-    # Low-frequency variation: generate noise on a coarse grid then upsample.
-    block = 16
-    coarse = rng.normal(0, 14, size=(h // block + 1, w // block + 1, 3))
-    coarse = np.repeat(np.repeat(coarse, block, axis=0), block, axis=1)[:h, :w]
 
-    img = BALLAST_RGB + fine + coarse
+def _gap(top_rail, bot_rail):
+    """Clear inter-rail gap (y0_inclusive, y1_exclusive) between two rails."""
+    return (top_rail[1], bot_rail[0])
+
+
+# --------------------------------------------------------------------------- #
+# Layer builders — each mutates `img` in place
+# --------------------------------------------------------------------------- #
+
+def _ballast_texture(rng):
+    """Dark reddish-brown ballast filling the whole image.
+
+    Each pixel is the base BACKGROUND_RGB multiplied by an independent
+    brightness factor in (0, 1] — variance is one-sided (only toward black)
+    so the average hue stays close to the base colour and the texture looks
+    like a fine global dotting rather than coloured patches. No block-level
+    coarse noise is used.
+    """
+    h, w = IMG_H, IMG_W
+    # Half-normal darkening: brightness = 1 - |N(0, σ)|. With σ=0.10, mean
+    # darkening ≈ 0.08, so the median pixel stays within ~8% of the base
+    # colour — the texture reads as "the base hue with occasional darker
+    # specks" rather than as a generally washed-out palette.
+    darkening = np.abs(rng.normal(0, 0.10, size=(h, w, 1))).astype(np.float32)
+    brightness = np.clip(1.0 - darkening, 0.15, 1.0)
+    # Tiny per-pixel chromatic jitter so the texture isn't monochrome.
+    tint = rng.normal(0, 3, size=(h, w, 3)).astype(np.float32)
+    img = BACKGROUND_RGB * brightness + tint
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def _draw_sleepers(rng, img, y_top_rail, y_bot_rail):
-    """Draw dark transverse sleeper stripes across the rail band.
+def _add_red_background_noise(rng, img):
+    """Scatter a small proportion of red pixels across the whole image.
 
-    Sleepers are blended (not overwritten) with the ballast underneath so they
-    look embedded in the gravel rather than painted on top. They extend slightly
-    above the top rail and below the bottom rail to match real samples.
+    Isolated pixels or 1-2 px clusters that prevent the model from treating
+    "all red = rail." Concentrated in ballast zones (anywhere, but visually
+    they only stand out off-rail).
     """
     h, w = img.shape[:2]
-
-    # Sleepers extend a touch beyond the rail pair
-    band_top = max(0, y_top_rail - int(h * 0.01))
-    band_bot = min(h, y_bot_rail + int(h * 0.01))
-
-    # Spacing every 3.5–5% of width, with a random phase so the pattern doesn't
-    # start at the same x in every image
-    spacing = int(w * rng.uniform(0.035, 0.05))
-    sleeper_w = max(2, int(w * 0.012))
-    x = rng.integers(0, spacing)
-
-    while x < w:
-        x0 = max(0, x - sleeper_w // 2)
-        x1 = min(w, x + sleeper_w // 2)
-        region = img[band_top:band_bot, x0:x1].astype(np.float32)
-        new_pixels = SLEEPER_RGB + rng.normal(0, 10, size=region.shape)
-        # 60/40 blend: sleeper dominates but ballast shows through
-        blended = 0.6 * new_pixels + 0.4 * region
-        img[band_top:band_bot, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
-        x += spacing
-
-
-def _draw_rails(rng, img, y_top_rail, y_bot_rail):
-    """Draw two parallel horizontal dark-red rails on top of the sleepers."""
-    h, w = img.shape[:2]
-    rail_thickness = max(2, int(h * 0.012))
-
-    for y in (y_top_rail, y_bot_rail):
-        y0 = max(0, y - rail_thickness // 2)
-        y1 = min(h, y + rail_thickness // 2 + 1)
-        # Per-pixel noise so the rail isn't a perfectly uniform line
-        noise = rng.normal(0, 12, size=(y1 - y0, w, 3))
-        img[y0:y1] = np.clip(RAIL_RGB + noise, 0, 255).astype(np.uint8)
-
-
-def _add_green_noise(rng, img, y_top_rail, y_bot_rail):
-    """Scatter small green blobs as hard negatives.
-
-    The model must learn that "green pixel between rails = clip" but
-    "green pixel outside rails = ignore." We achieve this by placing most blobs
-    outside the inter-rail zone (vegetation alongside the track) and a few
-    inside it (tiny debris that should NOT be confused with the clip).
-    """
-    h, w = img.shape[:2]
-    yy, xx = np.ogrid[:h, :w]
-    n_blobs = rng.integers(25, 70)
-
-    for _ in range(n_blobs):
-        if rng.random() < 0.85:
-            # Outside the rails: either above top rail or below bottom rail
-            if rng.random() < 0.5:
-                cy = rng.integers(0, max(1, y_top_rail - 2))
-            else:
-                cy = rng.integers(min(h - 1, y_bot_rail + 3), h)
-        else:
-            # Tiny blob inside the inter-rail zone (hard negative)
-            if y_bot_rail - y_top_rail > 4:
-                cy = rng.integers(y_top_rail + 2, y_bot_rail - 1)
-            else:
-                continue
-
-        cx = rng.integers(0, w)
-        radius = rng.integers(1, 4)
-        mask = (yy - cy) ** 2 + (xx - cx) ** 2 < radius ** 2
-        n_px = int(mask.sum())
-        if n_px:
-            colours = GREEN_RGB + rng.normal(0, 20, size=(n_px, 3))
-            img[mask] = np.clip(colours, 0, 255).astype(np.uint8)
-
-
-def _add_crocodile_clip(rng, img, y_top_rail, y_bot_rail):
-    """Place a clip between the two rails. Returns bbox (x0, y0, x1, y1).
-
-    The clip is modelled as a small elongated rectangle running perpendicular to
-    the rails (taller than wide, since the rails are horizontal). Its body is red
-    (at rail height in the LiDAR height map), with a random proportion of green
-    dots scattered toward the centre — the contact points / spring that protrude
-    slightly higher. Position between the rails is the primary discriminating
-    feature; the colour signature is secondary.
-    """
-    h, w = img.shape[:2]
-    inter_h = y_bot_rail - y_top_rail
-
-    if inter_h <= 4:
-        return None
-
-    # Position: within the inter-rail zone, in the middle 70% horizontally
-    cy = rng.integers(y_top_rail + max(1, inter_h // 5),
-                      y_bot_rail - max(1, inter_h // 5))
-    cx = rng.integers(int(w * 0.15), int(w * 0.85))
-
-    # Dimensions: narrow (3–7 px wide), tall enough to span most of the gap
-    clip_w = int(rng.integers(3, 8))
-    clip_h = int(rng.integers(max(4, int(inter_h * 0.5)),
-                              max(5, int(inter_h * 0.9))))
-
-    x0 = max(0, cx - clip_w // 2)
-    x1 = min(w, x0 + clip_w)
-    y0 = max(0, cy - clip_h // 2)
-    y1 = min(h, y0 + clip_h)
-
-    bh = y1 - y0
-    bw = x1 - x0
-
-    # --- Clip body: red, at rail height ---
-    body_noise = rng.normal(0, 15, size=(bh, bw, 3))
-    img[y0:y1, x0:x1] = np.clip(CLIP_BODY_RGB + body_noise, 0, 255).astype(np.uint8)
-
-    # --- Green dots: scattered in the centre portion of the body ---
-    # A random fraction (20–70%) of pixels in the inner centre band become green,
-    # mimicking the contact points / spring that stick up higher than the body.
-    green_fraction = rng.uniform(0.2, 0.7)
-    # Inner band: middle third horizontally and middle half vertically
-    iy0 = y0 + bh // 4
-    iy1 = y1 - bh // 4
-    ix0 = x0 + bw // 4
-    ix1 = x1 - bw // 4
-    if iy1 > iy0 and ix1 > ix0:
-        n_inner = (iy1 - iy0) * (ix1 - ix0)
-        green_mask = rng.random(n_inner) < green_fraction
-        inner_region = img[iy0:iy1, ix0:ix1].reshape(-1, 3).copy()
-        dot_noise = rng.normal(0, 15, size=(n_inner, 3))
-        inner_region[green_mask] = np.clip(
-            CLIP_DOT_RGB + dot_noise[green_mask], 0, 255
-        ).astype(np.uint8)
-        img[iy0:iy1, ix0:ix1] = inner_region.reshape(iy1 - iy0, ix1 - ix0, 3)
-
-    # --- Optional thin wire extending upward ---
-    # NOT included in the bounding box — the detector should fire on the clip body
-    if rng.random() < 0.6:
-        wire_top = max(0, y0 - int(rng.integers(20, 80)))
-        wire_x = cx + int(rng.integers(-1, 2))
-        wx0 = max(0, wire_x - 1)
-        wx1 = min(w, wire_x + 1)
-        if y0 > wire_top and wx1 > wx0:
-            wn = rng.normal(0, 12, size=(y0 - wire_top, wx1 - wx0, 3))
-            img[wire_top:y0, wx0:wx1] = np.clip(
-                CLIP_BODY_RGB + wn, 0, 255
+    n_speckles = int(rng.integers(80, 180))
+    for _ in range(n_speckles):
+        cx = int(rng.integers(0, w))
+        cy = int(rng.integers(0, h))
+        size = int(rng.integers(1, 3))
+        y0 = max(0, cy)
+        y1 = min(h, cy + size)
+        x0 = max(0, cx)
+        x1 = min(w, cx + size)
+        n = (y1 - y0) * (x1 - x0)
+        if n > 0:
+            col = RED_NOISE_RGB + rng.normal(0, 22, size=(n, 3))
+            img[y0:y1, x0:x1] = np.clip(
+                col.reshape(y1 - y0, x1 - x0, 3), 0, 255
             ).astype(np.uint8)
 
-    return (x0, y0, x1, y1)
 
+def _draw_sleepers(rng, img, rails):
+    """Black transverse sleepers across each track set's band.
 
-def _apply_scan_mask(rng, img, y_top_rail, y_bot_rail):
-    """Punch irregular white "no-data" patches into the top/bottom edges.
-
-    Real LiDAR scans have sparse data at the edges of the swath. We replicate
-    that by replacing pixels with white in irregular blob patterns concentrated
-    near the top and bottom of the image. The rail band itself is protected so
-    the track structure and any clip remain fully visible.
+    Spacing and thickness have noise. Some sleepers blend more weakly than
+    others to mimic patchy LiDAR returns.
     """
     h, w = img.shape[:2]
+    for top_rail, bot_rail in [(rails[0], rails[1]), (rails[2], rails[3])]:
+        band_top = max(0, top_rail[0] - 1)
+        band_bot = min(h, bot_rail[1] + 1)
+        if band_bot <= band_top:
+            continue
+
+        spacing = int(rng.integers(14, 22))
+        x = int(rng.integers(0, spacing))
+        while x < w:
+            sleeper_w = 1 if rng.random() < 0.7 else 2
+            x0 = max(0, x - sleeper_w // 2)
+            x1 = min(w, x + sleeper_w // 2 + 1)
+            opacity = float(rng.uniform(0.20, 0.55))
+            if rng.random() < 0.30:
+                opacity *= float(rng.uniform(0.15, 0.45))
+            region = img[band_top:band_bot, x0:x1].astype(np.float32)
+            new_px = SLEEPER_RGB + rng.normal(0, 6, size=region.shape)
+            blended = opacity * new_px + (1.0 - opacity) * region
+            img[band_top:band_bot, x0:x1] = np.clip(blended, 0, 255).astype(np.uint8)
+            x += spacing + int(rng.integers(-4, 5))
+
+
+def _draw_rails(rng, img, rails):
+    """Draw the four horizontal rails.
+
+    Real LiDAR rails are far from clean horizontal lines: returns vary in
+    intensity along the rail, drop out entirely in patches (sparse points),
+    and shift slightly in hue. We model that with:
+      * per-pixel chromatic noise (saturation/hue jitter)
+      * a slow horizontal "alpha" mask that fades the rail into the ballast
+      * occasional hard holes (LiDAR returned no point in that column)
+      * a per-rail overall intensity multiplier so not every rail is equally bright
+    """
+    h, w = img.shape[:2]
+    for y0, y1 in rails:
+        if y1 <= y0:
+            continue
+        rail_h = y1 - y0
+
+        # Overall intensity for this rail — some rails fainter than others
+        rail_strength = float(rng.uniform(0.65, 1.0))
+
+        # Per-pixel chromatic noise — bigger than before so hue varies
+        noise = rng.normal(0, 22, size=(rail_h, w, 3))
+
+        # Slow horizontal intensity variation — broad bright/dark segments
+        col_var = rng.normal(0, 35, size=(1, w, 1))
+        # Smooth to avoid 1-px striping
+        k = 5
+        kernel = np.ones((1, k, 1)) / k
+        col_var = np.apply_along_axis(
+            lambda v: np.convolve(v, kernel.ravel(), mode="same"), 1, col_var
+        )
+
+        # Per-column blend mask (alpha) — fraction of rail vs background
+        # Mostly mid-high but with a long-tailed dropout
+        col_alpha = rng.beta(3.0, 1.2, size=w)
+        # Smooth the alpha so dropouts come in patches not single columns
+        col_alpha = np.convolve(col_alpha, np.ones(3) / 3, mode="same")
+        # Hard holes: a small fraction of columns get near-zero alpha
+        hole_mask = rng.random(w) < 0.04
+        col_alpha[hole_mask] *= rng.uniform(0, 0.2, size=int(hole_mask.sum()))
+        col_alpha = col_alpha[None, :, None]  # (1, w, 1)
+
+        rail_colour = np.clip(
+            (RAIL_RGB + noise + col_var) * rail_strength, 0, 255
+        )
+        bg = img[y0:y1].astype(np.float32)
+        blended = col_alpha * rail_colour + (1.0 - col_alpha) * bg
+        img[y0:y1] = np.clip(blended, 0, 255).astype(np.uint8)
+
+
+def _add_rail_motifs(rng, img, rails):
+    """Small markings on top of the rails — brighter/darker pixel clusters."""
+    h, w = img.shape[:2]
+    for y0, y1 in rails:
+        if y1 <= y0:
+            continue
+        n_motifs = int(rng.integers(8, 22))
+        for _ in range(n_motifs):
+            mx = int(rng.integers(0, max(1, w - 4)))
+            mw = int(rng.integers(1, 4))
+            x1 = min(w, mx + mw)
+            if rng.random() < 0.5:
+                tone = RAIL_RGB + np.array([40, 35, 20], dtype=np.float32)
+            else:
+                tone = RAIL_RGB + np.array([-70, -55, -10], dtype=np.float32)
+            tone = np.clip(tone, 0, 255)
+            n = (y1 - y0) * (x1 - mx)
+            if n > 0:
+                noise = rng.normal(0, 10, size=(y1 - y0, x1 - mx, 3))
+                img[y0:y1, mx:x1] = np.clip(tone + noise, 0, 255).astype(np.uint8)
+
+
+def _draw_blob(rng, img, cx, cy, radius, colour):
+    """Roughly-circular blob of given colour (with chromatic noise)."""
+    h, w = img.shape[:2]
     yy, xx = np.ogrid[:h, :w]
+    mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius ** 2
+    n = int(mask.sum())
+    if n > 0:
+        col = colour + rng.normal(0, 20, size=(n, 3))
+        img[mask] = np.clip(col, 0, 255).astype(np.uint8)
 
-    # Protect a margin around the rail band — no white holes here
-    protected_top = max(0, y_top_rail - int(h * 0.04))
-    protected_bot = min(h, y_bot_rail + int(h * 0.04))
 
-    final_mask = np.zeros((h, w), dtype=bool)  # True = becomes white
-    n_holes = rng.integers(30, 80)
+def _draw_diagonal_rail(rng, img, x0, y0, x1, y1, thickness=2):
+    """Draw a diagonal rail line between two points by stepping along x.
 
-    for _ in range(n_holes):
-        # Bias holes toward the top or bottom of the image
-        if rng.random() < 0.5:
-            cy = int(rng.integers(0, max(1, protected_top)))
-        else:
-            cy = int(rng.integers(min(h - 1, protected_bot), h))
-        cx = int(rng.integers(0, w))
-        radius = int(rng.integers(8, 40))
-        circle = (yy - cy) ** 2 + (xx - cx) ** 2 < radius ** 2
-        # Speckled removal so the white area looks ragged, not perfectly round
-        speckle = rng.random((h, w)) < 0.7
-        final_mask |= circle & speckle
+    Uses the same LiDAR-style sparsity as the main rails: per-column alpha
+    blending with occasional hole columns.
+    """
+    h, w = img.shape[:2]
+    if x1 == x0:
+        return
+    dx = x1 - x0
+    dy = y1 - y0
+    n_steps = abs(dx) + 1
+    sgn = 1 if dx > 0 else -1
+    strength = float(rng.uniform(0.65, 1.0))
+    for i in range(n_steps):
+        x = x0 + sgn * i
+        if not (0 <= x < w):
+            continue
+        # Column alpha — high mostly, with occasional dropouts
+        alpha = float(rng.beta(3.0, 1.0))
+        if rng.random() < 0.05:
+            alpha *= float(rng.uniform(0, 0.2))
+        t = i / max(1, n_steps - 1)
+        y_center = int(round(y0 + t * dy))
+        y_lo = max(0, y_center - thickness // 2)
+        y_hi = min(h, y_lo + thickness)
+        if y_hi <= y_lo:
+            continue
+        for yy in range(y_lo, y_hi):
+            rail_col = np.clip((RAIL_RGB + rng.normal(0, 22, size=3)) * strength, 0, 255)
+            bg = img[yy, x].astype(np.float32)
+            img[yy, x] = np.clip(alpha * rail_col + (1.0 - alpha) * bg, 0, 255).astype(np.uint8)
 
-    # Hard guard: never touch the protected rail band
-    final_mask[protected_top:protected_bot] = False
-    img[final_mask] = WHITE
+
+def _draw_switch(rng, img, rails):
+    """Optionally draw switch-point variants A and/or B on top of the ballast.
+
+    Variant A: a diagonal rail crossing between the two track sets.
+    Variant B: a rail branching off and leaving the image edge.
+    """
+    h, w = img.shape[:2]
+    variants = []
+    if rng.random() < 0.7:
+        variants.append("A")
+    if rng.random() < 0.5:
+        variants.append("B")
+    if not variants:
+        variants.append("A")
+
+    rail_t = int(rng.choice([2, 3]))
+
+    for variant in variants:
+        if variant == "A":
+            # Diagonal between rail of upper track and rail of lower track
+            src_idx = int(rng.choice([1, 2]))           # inner rail of upper or lower
+            dst_idx = 2 if src_idx == 1 else 1
+            y_src = (rails[src_idx][0] + rails[src_idx][1]) // 2
+            y_dst = (rails[dst_idx][0] + rails[dst_idx][1]) // 2
+
+            run_length = int(rng.integers(220, 420))
+            x_start = int(rng.integers(0, max(1, w - run_length - 20)))
+            x_end = min(w - 1, x_start + run_length)
+            if rng.random() < 0.5:
+                x_start, x_end = x_end, x_start
+            _draw_diagonal_rail(rng, img, x_start, y_src, x_end, y_dst, thickness=rail_t)
+
+        else:  # Variant B
+            src_idx = int(rng.integers(0, 4))
+            y_src = (rails[src_idx][0] + rails[src_idx][1]) // 2
+            x_start = int(rng.integers(60, max(61, w - 60)))
+
+            edge = rng.choice(["left", "right", "top", "bottom"])
+            if edge == "left":
+                x_end = 0
+                y_end = max(0, min(h - 1, y_src + int(rng.integers(-20, 21))))
+            elif edge == "right":
+                x_end = w - 1
+                y_end = max(0, min(h - 1, y_src + int(rng.integers(-20, 21))))
+            elif edge == "top":
+                run = int(rng.integers(80, 260))
+                direction = int(rng.choice([-1, 1]))
+                x_end = max(0, min(w - 1, x_start + direction * run))
+                y_end = 0
+            else:  # bottom
+                run = int(rng.integers(80, 260))
+                direction = int(rng.choice([-1, 1]))
+                x_end = max(0, min(w - 1, x_start + direction * run))
+                y_end = h - 1
+            _draw_diagonal_rail(rng, img, x_start, y_src, x_end, y_end, thickness=rail_t)
+
+
+def _add_inter_rail_features(rng, img, rails):
+    """Hard negatives inside each inter-rail zone.
+
+    Per track set:
+      1. A green dot (left of the red line).
+      2. A red straight line (65-75 px, thinner than the clip, not perfectly
+         centred between the rails).
+      3. 2-6 small scattered green/red dots.
+    """
+    h, w = img.shape[:2]
+    for top_rail, bot_rail in [(rails[0], rails[1]), (rails[2], rails[3])]:
+        gap_y0, gap_y1 = _gap(top_rail, bot_rail)
+        if gap_y1 - gap_y0 < 6:
+            continue
+
+        # 1. Green dot — somewhere in the left portion of the gap
+        green_cx = int(rng.integers(20, w // 2 - 40))
+        green_cy = int(rng.integers(gap_y0 + 2, gap_y1 - 2))
+        green_r = int(rng.integers(2, 4))
+        _draw_blob(rng, img, green_cx, green_cy, green_r, GREEN_RGB)
+
+        # 2. Red straight line — to the right of the green dot
+        line_w = int(rng.integers(65, 76))
+        line_h = int(rng.choice([1, 2]))
+        min_start = green_cx + 25
+        max_start = max(min_start + 1, w - line_w - 5)
+        line_x0 = int(rng.integers(min_start, max_start))
+        # Off-centre vertically — never perfectly between the rails
+        gap_mid = (gap_y0 + gap_y1) // 2
+        offset = int(rng.choice([-3, -2, 2, 3]))
+        line_yc = gap_mid + offset
+        line_y0 = max(gap_y0 + 1, line_yc - line_h // 2)
+        line_y1 = min(gap_y1, line_y0 + line_h)
+        x_end = min(w, line_x0 + line_w)
+        if line_y1 > line_y0 and x_end > line_x0:
+            lh = line_y1 - line_y0
+            lw = x_end - line_x0
+            strength = float(rng.uniform(0.65, 0.95))
+            noise = rng.normal(0, 22, size=(lh, lw, 3))
+            line_col = np.clip((RAIL_RGB + noise) * strength, 0, 255)
+            alpha = rng.beta(3.0, 1.0, size=(lh, lw, 1))
+            hole = rng.random((lh, lw)) < 0.07
+            alpha[hole] *= rng.uniform(0, 0.2, size=(int(hole.sum()), 1))
+            bg = img[line_y0:line_y1, line_x0:x_end].astype(np.float32)
+            img[line_y0:line_y1, line_x0:x_end] = np.clip(
+                alpha * line_col + (1.0 - alpha) * bg, 0, 255
+            ).astype(np.uint8)
+
+        # 3. Scattered dots inside the inter-rail zone (2-6)
+        n_dots = int(rng.integers(2, 7))
+        for _ in range(n_dots):
+            dx = int(rng.integers(0, w))
+            dy = int(rng.integers(gap_y0 + 1, gap_y1 - 1))
+            dr = int(rng.integers(1, 3))
+            colour = GREEN_RGB if rng.random() < 0.5 else RED_NOISE_RGB
+            _draw_blob(rng, img, dx, dy, dr, colour)
+
+
+def _add_crocodile_clip(rng, img, rails, track):
+    """Place a crocodile clip in the chosen track's inter-rail zone.
+
+    Returns (x0, y0, x1, y1) or None if the gap is too narrow.
+    """
+    h, w = img.shape[:2]
+    if track == "upper":
+        top_rail, bot_rail = rails[0], rails[1]
+    else:
+        top_rail, bot_rail = rails[2], rails[3]
+    gap_y0, gap_y1 = _gap(top_rail, bot_rail)
+    gap_h = gap_y1 - gap_y0
+    if gap_h < 6:
+        return None
+
+    clip_w = int(rng.integers(65, 76))   # 65-75 px
+    clip_h = int(rng.integers(4, 6))     # 4-5 px
+
+    # Horizontally: roughly centred, with small jitter
+    cx = w // 2 + int(rng.integers(-60, 61))
+    x0 = max(0, cx - clip_w // 2)
+    x1 = min(w, x0 + clip_w)
+    if x1 - x0 < clip_w:
+        x0 = max(0, x1 - clip_w)
+
+    # Vertically: well centred between the two rails
+    gap_mid = (gap_y0 + gap_y1) // 2
+    cy = gap_mid + int(rng.integers(-1, 2))
+    y0 = max(gap_y0, cy - clip_h // 2)
+    y1 = min(gap_y1, y0 + clip_h)
+    if y1 - y0 < clip_h:
+        y0 = max(gap_y0, y1 - clip_h)
+    bh = y1 - y0
+    bw = x1 - x0
+    if bh <= 0 or bw <= 0:
+        return None
+
+    # --- Red body (with LiDAR-style intensity variation and small holes) ---
+    body_strength = float(rng.uniform(0.7, 1.0))
+    body_noise = rng.normal(0, 22, size=(bh, bw, 3))
+    # Slow horizontal variation along the clip length
+    body_col_var = rng.normal(0, 25, size=(1, bw, 1))
+    body_col_var = np.apply_along_axis(
+        lambda v: np.convolve(v, np.ones(3) / 3, mode="same"), 1, body_col_var
+    )
+    body_colour = np.clip(
+        (RAIL_RGB + body_noise + body_col_var) * body_strength, 0, 255
+    )
+    # Per-pixel alpha so the clip blends partially with the ballast
+    body_alpha = rng.beta(3.0, 1.0, size=(bh, bw, 1))
+    # Hard LiDAR holes
+    hole_mask = rng.random((bh, bw)) < 0.06
+    body_alpha[hole_mask] *= rng.uniform(0, 0.15, size=(int(hole_mask.sum()), 1))
+    bg = img[y0:y1, x0:x1].astype(np.float32)
+    img[y0:y1, x0:x1] = np.clip(
+        body_alpha * body_colour + (1.0 - body_alpha) * bg, 0, 255
+    ).astype(np.uint8)
+
+    # --- Green dots concentrated toward the centre ---
+    green_fraction = float(rng.uniform(0.35, 0.75))
+    inner_x0 = x0 + int(bw * 0.20)
+    inner_x1 = x1 - int(bw * 0.20)
+    if inner_x1 > inner_x0:
+        cx_inner = (inner_x0 + inner_x1) / 2.0
+        half = max(1.0, (inner_x1 - inner_x0) / 2.0)
+        for xi in range(inner_x0, inner_x1):
+            dist_norm = abs(xi - cx_inner) / half
+            p = green_fraction * (1.0 - 0.5 * dist_norm)
+            for yi in range(y0, y1):
+                if rng.random() < p:
+                    col = GREEN_RGB + rng.normal(0, 18, size=3)
+                    img[yi, xi] = np.clip(col, 0, 255).astype(np.uint8)
+
+    # --- Bounding-box jitter (label noise) ---
+    # Real annotations are not pixel-perfect — each edge wanders by a few
+    # pixels horizontally and ≤1 px vertically. Box always remains valid.
+    jx0 = int(rng.integers(-3, 4))
+    jx1 = int(rng.integers(-3, 4))
+    jy0 = int(rng.integers(-1, 2))
+    jy1 = int(rng.integers(-1, 2))
+    bx0 = max(0, min(IMG_W - 2, x0 + jx0))
+    bx1 = max(bx0 + 2, min(IMG_W, x1 + jx1))
+    by0 = max(0, min(IMG_H - 2, y0 + jy0))
+    by1 = max(by0 + 2, min(IMG_H, y1 + jy1))
+    return (bx0, by0, bx1, by1)
 
 
 # --------------------------------------------------------------------------- #
 # Compose one image
 # --------------------------------------------------------------------------- #
 
-def _make_image(rng, size, p_clip):
-    """Generate one synthetic LiDAR-style rail image.
+def _make_image(rng, config):
+    """Generate one synthetic image according to a config dict.
 
-    Layer order (bottom to top):
-      1. Ballast texture (the whole image)
-      2. Sleepers (dark transverse stripes around the rail band)
-      3. Rails (two horizontal lines)
-      4. Green vegetation noise (hard negatives, mostly outside the rails)
-      5. Optional crocodile clip (between the rails)
-      6. White no-data patches (top/bottom edges only)
+    config must contain: p_clip, p_switch, clip_tracks.
 
-    Returns (uint8 RGB array, bbox tuple or None).
+    Layer order (bottom -> top):
+      1. Ballast texture
+      2. Red background noise (speckle pixels)
+      3. Switch point extra rails (optional, drawn under sleepers)
+      4. Sleepers
+      5. Main rails (drawn on top of sleepers)
+      6. Rail motifs
+      7. Inter-rail fixed features + scattered dots (hard negatives)
+      8. Optional crocodile clip
+
+    Returns (uint8 HxWx3 RGB array, bbox tuple or None).
     """
-    # Step 1: ballast everywhere
-    img = _ballast_texture(rng, size)
+    rails, _rail_t = _pick_geometry(rng)
 
-    # Pick the rail geometry up front so every other layer can reference it.
-    # Track is centred vertically with a small random jitter, and the two
-    # rails are 10–15% of image height apart (standard gauge from overhead).
-    y_center = size // 2 + int(rng.integers(-size // 25, size // 25 + 1))
-    rail_gap = int(size * rng.uniform(0.10, 0.15))
-    y_top_rail = y_center - rail_gap // 2
-    y_bot_rail = y_center + rail_gap // 2
+    # 1. Ballast
+    img = _ballast_texture(rng)
+    # 2. Red speckle on ballast
+    _add_red_background_noise(rng, img)
+    # 3. Switch point (drawn before sleepers so sleepers overlap it visually)
+    if rng.random() < config["p_switch"]:
+        _draw_switch(rng, img, rails)
+    # 4. Sleepers
+    _draw_sleepers(rng, img, rails)
+    # 5. Main rails
+    _draw_rails(rng, img, rails)
+    # 6. Rail motifs on top of rails
+    _add_rail_motifs(rng, img, rails)
+    # 7. Inter-rail hard negatives
+    _add_inter_rail_features(rng, img, rails)
 
-    # Steps 2–4: sleepers, then rails on top, then green noise around them
-    _draw_sleepers(rng, img, y_top_rail, y_bot_rail)
-    _draw_rails(rng, img, y_top_rail, y_bot_rail)
-    _add_green_noise(rng, img, y_top_rail, y_bot_rail)
-
-    # Step 5: optional crocodile clip
+    # 8. Optional crocodile clip
     bbox = None
-    if rng.random() < p_clip:
-        bbox = _add_crocodile_clip(rng, img, y_top_rail, y_bot_rail)
-
-    # Step 6: white no-data edges (applied last so it visually overrides ballast/noise)
-    _apply_scan_mask(rng, img, y_top_rail, y_bot_rail)
+    if rng.random() < config["p_clip"]:
+        track = str(rng.choice(config["clip_tracks"]))
+        bbox = _add_crocodile_clip(rng, img, rails, track)
 
     return img, bbox
 
@@ -296,29 +544,37 @@ def _make_image(rng, size, p_clip):
 # Public loader — writes a YOLO-style dataset to disk
 # --------------------------------------------------------------------------- #
 
-def load_synthetic_rails(output_dir, n_samples=700, img_size=640, p_clip=0.5, seed=42):
+def load_synthetic_rails(output_dir, config="train_two_tracks", n_samples=700, seed=42):
     """Generate (or reuse) a synthetic rails dataset on disk in YOLO format.
 
-    Layout produced under `output_dir`:
-        images/rail_00000.png ...
-        labels/rail_00000.txt ...   # "0 cx cy w h" normalized, empty = no object
+    Layout produced under `output_dir/<config>/`:
+        images/rail_00000.png ...   (570x100 PNGs)
+        labels/rail_00000.txt ...   ("0 cx cy w h" normalised, empty = no clip)
 
-    If the labels directory already has at least `n_samples` files we skip
-    regeneration and just return the paths — makes re-runs cheap.
+    The cache check is per-config so regenerating one configuration does not
+    invalidate the others.
 
     Args:
-        output_dir: root directory for images/ and labels/.
-        n_samples: total number of images to generate.
-        img_size: square image side length in pixels.
-        p_clip: probability that any given image contains a crocodile clip.
-        seed: deterministic seed so runs are reproducible.
+        output_dir: root directory. A per-config subdir is created underneath.
+        config:     name of a configuration in CONFIGS, or a config dict.
+        n_samples:  total number of images to generate.
+        seed:       deterministic seed.
     """
-    output_dir = Path(output_dir)
-    images_dst = output_dir / "images"
-    labels_dst = output_dir / "labels"
+    if isinstance(config, str):
+        if config not in CONFIGS:
+            raise ValueError(f"Unknown config '{config}'. Available: {list(CONFIGS)}")
+        cfg = CONFIGS[config]
+        cfg_name = config
+    else:
+        cfg = config
+        cfg_name = cfg.get("name", "custom")
+
+    root = Path(output_dir) / cfg_name
+    images_dst = root / "images"
+    labels_dst = root / "labels"
     classes = ["crocodile_clip"]
 
-    # Cache: if enough labels already exist, treat the dataset as ready.
+    # Cache: re-use existing files if the requested count is already present.
     if labels_dst.exists() and len(list(labels_dst.glob("*.txt"))) >= n_samples:
         return {"images_dir": images_dst, "labels_dir": labels_dst, "classes": classes}
 
@@ -327,20 +583,18 @@ def load_synthetic_rails(output_dir, n_samples=700, img_size=640, p_clip=0.5, se
 
     rng = np.random.default_rng(seed)
     for i in range(n_samples):
-        img, bbox = _make_image(rng, img_size, p_clip)
+        img, bbox = _make_image(rng, cfg)
         name = f"rail_{i:05d}"
         Image.fromarray(img).save(images_dst / f"{name}.png")
 
-        # YOLO label: empty file = "background, no object"
         if bbox is None:
             (labels_dst / f"{name}.txt").write_text("")
         else:
             x0, y0, x1, y1 = bbox
-            # YOLO format: class cx cy w h, all normalized to image size
-            cx = (x0 + x1) / 2 / img_size
-            cy = (y0 + y1) / 2 / img_size
-            bw = (x1 - x0) / img_size
-            bh = (y1 - y0) / img_size
+            cx = (x0 + x1) / 2 / IMG_W
+            cy = (y0 + y1) / 2 / IMG_H
+            bw = (x1 - x0) / IMG_W
+            bh = (y1 - y0) / IMG_H
             (labels_dst / f"{name}.txt").write_text(
                 f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}\n"
             )

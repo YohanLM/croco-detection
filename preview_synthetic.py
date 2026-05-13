@@ -1,7 +1,10 @@
-"""Generate 5 sample synthetic images for visual inspection.
+"""Generate sample synthetic images for visual inspection.
 
-Two of the images will contain a crocodile clip (with its bounding box drawn
-in red so you can verify the label is correct), three will be empty rails.
+Produces:
+  - Two clip-in-upper-track examples (bbox drawn in red)
+  - Two clip-in-lower-track examples (bbox drawn in red)
+  - Two empty-rails examples
+  - Two switch-point examples (forced to contain a switch; one with clip, one without)
 
 Outputs go to `preview/`. Run with: `python preview_synthetic.py`.
 """
@@ -14,13 +17,16 @@ from PIL import Image, ImageDraw
 from dataset_synthetic import _make_image
 
 
-# 2 with clip (p_clip=1.0 forces it on), 3 without (p_clip=0.0 forces it off)
+# Each entry: (filename, config dict to drive _make_image)
 SPECS = [
-    ("with_clip_1", 1.0),
-    ("with_clip_2", 1.0),
-    ("no_clip_1", 0.0),
-    ("no_clip_2", 0.0),
-    ("no_clip_3", 0.0),
+    ("clip_upper_1",   {"p_clip": 1.0, "p_switch": 0.0, "clip_tracks": ("upper",)}),
+    ("clip_upper_2",   {"p_clip": 1.0, "p_switch": 0.0, "clip_tracks": ("upper",)}),
+    ("clip_lower_1",   {"p_clip": 1.0, "p_switch": 0.0, "clip_tracks": ("lower",)}),
+    ("clip_lower_2",   {"p_clip": 1.0, "p_switch": 0.0, "clip_tracks": ("lower",)}),
+    ("no_clip_1",      {"p_clip": 0.0, "p_switch": 0.0, "clip_tracks": ("upper", "lower")}),
+    ("no_clip_2",      {"p_clip": 0.0, "p_switch": 0.0, "clip_tracks": ("upper", "lower")}),
+    ("switch_no_clip", {"p_clip": 0.0, "p_switch": 1.0, "clip_tracks": ("upper", "lower")}),
+    ("switch_with_clip", {"p_clip": 1.0, "p_switch": 1.0, "clip_tracks": ("upper", "lower")}),
 ]
 
 
@@ -28,24 +34,21 @@ def main():
     out_dir = Path("preview")
     out_dir.mkdir(exist_ok=True)
 
-    img_size = 640
-    # Shared RNG so successive images don't all look the same
     rng = np.random.default_rng(seed=123)
 
-    for name, p_clip in SPECS:
-        img, bbox = _make_image(rng, img_size, p_clip)
+    for name, cfg in SPECS:
+        img, bbox = _make_image(rng, cfg)
         pil = Image.fromarray(img)
 
-        # Overlay the bounding box on clipped images so we can confirm the
-        # label geometry matches what we see in the image
+        # Overlay the bounding box so we can confirm the label geometry
         if bbox is not None:
             draw = ImageDraw.Draw(pil)
             x0, y0, x1, y1 = bbox
-            draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 0), width=2)
+            draw.rectangle([x0, y0, x1, y1], outline=(255, 0, 0), width=1)
 
         out_path = out_dir / f"{name}.png"
         pil.save(out_path)
-        print(f"Wrote {out_path}")
+        print(f"Wrote {out_path}  ({pil.size[0]}x{pil.size[1]})")
 
 
 if __name__ == "__main__":

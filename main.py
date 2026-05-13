@@ -2,10 +2,14 @@
 
 Pluggable loader: swap `load_dataset` for any function with the
 `dataset_loader` interface to run the same experiment on a different dataset.
+
+Run with: `python main.py` (inside an active venv).
+The synthetic dataset is generated on first run and cached for later runs.
 """
 
 import json
 import random
+from functools import partial
 from pathlib import Path
 
 import yaml
@@ -18,18 +22,29 @@ from dataset_synthetic import load_synthetic_rails
 # Load KAGGLE_USERNAME and KAGGLE_KEY from .env so kagglehub can authenticate
 load_dotenv()
 
+# ── Dataset config ────────────────────────────────────────────────────────────
+# Synthetic mix: 15% of images contain a crocodile clip, 5% contain a switch
+# point, and the clip may be placed in either the upper or the lower track set.
+# See `image_description.md` and CONFIGS in dataset_synthetic.py.
+SYNTHETIC_CONFIG = "experiment_15c_5s"
+N_SAMPLES = 4000     # total images generated for the split (train + test pool)
+
 # ── Pluggable dataset loader ──────────────────────────────────────────────────
-# To test a different dataset, write a new loader in its own dataset_*.py file
-# and replace this line. The rest of the script stays the same.
-load_dataset = load_synthetic_rails
+# Bound to the synthetic loader with the experiment config preset. To switch
+# datasets (e.g. the kaggle pothole one), replace this line with another loader
+# that accepts (output_dir) and returns {images_dir, labels_dir, classes}.
+load_dataset = partial(load_synthetic_rails, config=SYNTHETIC_CONFIG, n_samples=N_SAMPLES)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-DATA_DIR = Path("data/dataset")   # where images/ and labels/ will be created
+DATA_DIR = Path("data/dataset")   # synthetic images/labels go under here (per-config subdir)
 WORK_DIR = Path("data/splits")    # train_N.txt, test.txt and YAML files go here
 RESULTS_FILE = Path("results.json")
 
 # ── Experiment config ─────────────────────────────────────────────────────────
-SUBSET_SIZES = [100, 250, 500]  # number of training images to try
+# Dense at the low end (where the curve is steepest), log-spaced higher up,
+# one large run to verify the plateau. Total wall time on a base M2 with
+# DEVICE="mps" should sit around 80–110 min including dataset generation.
+SUBSET_SIZES = [50, 100, 200, 400, 800, 1600, 2800]
 TEST_RATIO = 0.2    # 20 % of the dataset is held out as a fixed test set
 EPOCHS = 25
 IMGSZ = 640         # longest-side target; rect=True keeps the 570x100 aspect ratio
