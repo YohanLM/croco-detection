@@ -1,93 +1,68 @@
 # Experiment Plan
 
-Each comparison varies **one thing at a time** against a shared baseline. No full factorial crossing.
-
-Baseline: `rect_c15_m5_col` — rectangular images, 15 % clip rate, 5 % motif gate, colour.
+Three training runs total. One full curve to find the minimum useful training size, two spot-checks to see how format and colour affect it.
 
 ---
 
-## Comparisons
+## Run 1 — Main (full curve)
 
-### A — Clip density
+**Goal:** find the training-set size at which results become acceptable.
 
-Does a higher clip rate reduce the training set needed? Does sparse clip presence inflate the required size?
+- Images: square (640 × 640)
+- Colour: colour
+- `p_clip` = 0.30, motif gate = 0.15
+- Subset sizes: **100, 200, 400, 800, 1600, 2800**
 
-| Dataset | `p_clip` | motif gate | shape | colour |
-|---|---|---|---|---|
-| `rect_c05_m5_col` | 5 % | 5 % | rect | colour |
-| **`rect_c15_m5_col`** *(baseline)* | **15 %** | **5 %** | rect | colour |
-| `rect_c30_m5_col` | 30 % | 5 % | rect | colour |
+This produces the learning curve we care about most. We read off the point where mAP@.5 flattens — call it N*.
 
-Everything else is fixed. The metric of interest is the training-set size at which the mAP@.5 learning curve flattens.
+---
 
-### B — Hard-negative load
+## Run 2 — Spot-check: cropped rectangular images
 
-Does a heavier dose of confusers (motif A / motif B) force the model to need more examples?
+**Goal:** rough idea of whether the smaller, focused crop needs more or fewer images.
 
-| Dataset | `p_clip` | motif gate | shape | colour |
-|---|---|---|---|---|
-| `rect_c15_m2_col` | 15 % | 2 % | rect | colour |
-| **`rect_c15_m5_col`** *(baseline)* | **15 %** | **5 %** | rect | colour |
-| `rect_c15_m15_col` | 15 % | 15 % | rect | colour |
+- Images: rectangular (570 × 100, `rect=True`)
+- Colour: colour
+- Same generator config as Run 1
+- Subset sizes: **200, 800**
 
-Motif gate 0 % is excluded on purpose — removing confusers entirely would not tell us anything useful about the real setting where they exist.
+Two points straddle the likely knee of the curve. If both are close to Run 1 at the same sizes, the format barely matters. If they diverge, we know which direction and can decide whether a fuller curve is worth it.
 
-### C — Colour vs greyscale (both shapes)
+---
 
-Does stripping colour force the model to rely on shape, and if so, how much more data does it need?
-Tested on both shapes to check whether the effect is shape-dependent.
+## Run 3 — Spot-check: greyscale
 
-| Dataset | shape | colour | how produced |
-|---|---|---|---|
-| **`rect_c15_m5_col`** *(baseline)* | rect | colour | generator |
-| `rect_c15_m5_grey` | rect | greyscale | `make_greyscale.py` on col dataset |
-| `sq_c15_m5_col` | square | colour | generator |
-| `sq_c15_m5_grey` | square | greyscale | `make_greyscale.py` on col dataset |
+**Goal:** rough idea of how much the colour cue was helping.
 
-The greyscale variants cost no extra generation — just run:
+- Images: square (same as Run 1), converted with `make_greyscale.py`
+- Colour: greyscale
+- Same generator config as Run 1
+- Subset sizes: **200, 800**
+
+Same logic as Run 2. Compare the two greyscale points against the Run 1 curve at the same sizes to quantify the colour penalty.
+
+---
+
+## Producing the datasets
 
 ```bash
-python make_greyscale.py data/dataset/rect_c15_m5_col data/dataset/rect_c15_m5_grey
-python make_greyscale.py data/dataset/sq_c15_m5_col   data/dataset/sq_c15_m5_grey
+# Run 1 + 3: generate square colour dataset once
+python dataset_synthetic_square.py   # -> data/dataset/sq_c30_m15_col
+
+# Run 3: convert to greyscale
+python make_greyscale.py data/dataset/sq_c30_m15_col data/dataset/sq_c30_m15_grey
+
+# Run 2: generate rectangular colour dataset
+python dataset_synthetic.py          # -> data/dataset/rect_c30_m15_col
 ```
 
 ---
 
-## Dataset naming convention
+## Wall-time estimate (Apple M2, MPS, 25 epochs)
 
-```
-<shape>_<clip rate>_<motif gate>_<colour>
-```
-
-| Tag | Values |
-|---|---|
-| shape | `rect` / `sq` |
-| clip rate | `c05` / `c15` / `c30` |
-| motif gate | `m2` / `m5` / `m15` |
-| colour | `col` / `grey` |
-
----
-
-## Keeping the run count down
-
-**Total distinct datasets:** 7 (3 for A, 2 new for B, 2 new for C — baseline shared).
-**Training runs per dataset:** up to 7 subset sizes → **up to 49 runs total**.
-
-Two further savings:
-
-**Stop early on the learning curve.** Run subsets 50 → 100 → 200 → 400 first. Only extend to 800 → 1600 → 2800 if the curve hasn't clearly flattened yet. A dataset that reaches plateau at 200 images saves 3 runs outright.
-
-**Prioritise in order A → B → C.** Clip density (A) is the most fundamental question. If `c05` and `c30` both plateau at the same size as `c15`, hard-negative load (B) becomes the interesting question. Shape and colour (C) are run last; if the baseline already produces strong results, C may only need a partial curve.
-
----
-
-## Rough wall-time budget (Apple M2, MPS)
-
-| Step | Time | Count | Total |
+| Run | Sizes | Training runs | Est. time |
 |---|---|---|---|
-| Image generation (4 000 imgs) | ~2 min | 5 colour datasets | ~10 min |
-| Greyscale conversion | < 1 min | 2 grey datasets | negligible |
-| YOLO training (25 ep, 640px) | ~10–15 min/run | ≤ 49 runs | ~8–12 h |
-| YOLO val | ~1 min/run | ≤ 49 runs | ~1 h |
-
-Plan for 3–4 sessions of ~2 h, starting with comparison A.
+| Run 1 | 6 sizes | 6 | ~90 min |
+| Run 2 | 2 sizes | 2 | ~30 min |
+| Run 3 | 2 sizes | 2 | ~30 min |
+| **Total** | | **10** | **~2.5 h** |

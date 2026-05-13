@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-import dataset_synthetic as ds
+import data_generation.dataset_synthetic as ds
 
 
 # --------------------------------------------------------------------------- #

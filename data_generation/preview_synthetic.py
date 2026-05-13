@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-import dataset_synthetic
-from dataset_synthetic import _make_image
+import data_generation.dataset_synthetic as dataset_synthetic
+from data_generation.dataset_synthetic import _make_image
 
 
 # Each entry: (filename, config dict to drive _make_image)
@@ -72,7 +72,7 @@ def main():
 def _make_image_with_forced_motif(rng, cfg, force_type):
     """Run the normal image pipeline but force the rare-motif gate to fire."""
     import numpy as np
-    from dataset_synthetic import (
+    from data_generation.dataset_synthetic import (
         _pick_geometry, _ballast_texture, _add_red_background_noise,
         _draw_switch, _draw_sleepers, _draw_rails, _add_rail_motifs,
         _draw_blob, _gap, GREEN_RGB, RED_NOISE_RGB,
