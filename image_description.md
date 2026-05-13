@@ -146,7 +146,11 @@ parameters. They are designed to test different aspects of model robustness.
 
 ## Notes for implementation
 
-- All images are square, 640 × 640 px (matches YOLO's default input size directly).
+- Images are **570 × 100 px** — this matches the real cropped LiDAR exports.
+  Do not generate at 640×640; the synthetic images must match the real domain size.
+- YOLO input preprocessing: use `rect=True` during training and validation so
+  YOLO scales to 640×128 (padding only 8 px top/bottom) instead of letterboxing
+  to 640×640 (which would waste ~82% of the network on gray padding).
 - YOLO labels: normalised centre-x, centre-y, width, height (`0 cx cy w h`).
 - An empty label file means the image is a true negative (no clip).
 - The dataset cache check (skip regeneration if files already exist) should be

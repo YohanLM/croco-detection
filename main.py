@@ -32,7 +32,7 @@ RESULTS_FILE = Path("results.json")
 SUBSET_SIZES = [100, 250, 500]  # number of training images to try
 TEST_RATIO = 0.2    # 20 % of the dataset is held out as a fixed test set
 EPOCHS = 25
-IMGSZ = 640         # input resolution (pixels)
+IMGSZ = 640         # longest-side target; rect=True keeps the 570x100 aspect ratio
 DEVICE = "mps"      # Apple Silicon GPU; use "cpu" or "0" (CUDA) on other machines
 SEED = 42           # fixes shuffle so every run produces the same splits
 WEIGHTS = "yolo11n.pt"  # nano variant — smallest and fastest YOLO11
@@ -92,6 +92,7 @@ def main():
             name=f"size_{size}",  # run saved to runs/detect/size_N/
             exist_ok=True,        # overwrite previous run with the same name
             seed=SEED,
+            rect=True,            # rectangular training: pads to 640x128 instead of 640x640
         )
 
         # Evaluate the trained model on the fixed test set
