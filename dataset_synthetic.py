@@ -347,55 +347,148 @@ def _draw_switch(rng, img, rails):
             _draw_diagonal_rail(rng, img, x_start, y_src, x_end, y_end, thickness=rail_t)
 
 
-def _add_inter_rail_features(rng, img, rails):
-    """Hard negatives inside each inter-rail zone.
+def _draw_red_bar(rng, img, x0_world, x1_world, y0, y1):
+    """Draw a partially-transparent rail-coloured horizontal bar.
 
-    Per track set:
-      1. A green dot (left of the red line).
-      2. A red straight line (65-75 px, thinner than the clip, not perfectly
-         centred between the rails).
-      3. 2-6 small scattered green/red dots.
+    World coords (x0_world, x1_world) may extend off either edge; we clip to
+    the image. Used by the clip-like hard-negative motifs.
     """
     h, w = img.shape[:2]
+    sx0 = max(0, x0_world)
+    sx1 = min(w, x1_world)
+    if sx1 <= sx0 or y1 <= y0:
+        return
+    bh = y1 - y0
+    bw = sx1 - sx0
+    strength = float(rng.uniform(0.65, 0.95))
+    noise = rng.normal(0, 22, size=(bh, bw, 3))
+    colour = np.clip((RAIL_RGB + noise) * strength, 0, 255)
+    alpha = rng.beta(3.0, 1.0, size=(bh, bw, 1))
+    hole = rng.random((bh, bw)) < 0.07
+    alpha[hole] *= rng.uniform(0, 0.2, size=(int(hole.sum()), 1))
+    bg = img[y0:y1, sx0:sx1].astype(np.float32)
+    img[y0:y1, sx0:sx1] = np.clip(
+        alpha * colour + (1.0 - alpha) * bg, 0, 255
+    ).astype(np.uint8)
+
+
+def _draw_green_tail(rng, img, x0_world, x1_world, gap_y0, gap_y1, bar_y0, bar_y1):
+    """Draw a dense green grouping at one end of a motif (Motif A's tail).
+
+    The green spans the bar height but also bleeds 1 px above/below, like a
+    soft elevated blob rather than a thin line.
+    """
+    h, w = img.shape[:2]
+    sx0 = max(0, x0_world)
+    sx1 = min(w, x1_world)
+    if sx1 <= sx0:
+        return
+    # Slightly wider vertical span than the red bar
+    y0 = max(gap_y0, bar_y0 - 1)
+    y1 = min(gap_y1, bar_y1 + 1)
+    if y1 <= y0:
+        return
+    density = float(rng.uniform(0.55, 0.85))
+    for xi in range(sx0, sx1):
+        for yi in range(y0, y1):
+            if rng.random() < density:
+                col = GREEN_RGB + rng.normal(0, 18, size=3)
+                img[yi, xi] = np.clip(col, 0, 255).astype(np.uint8)
+
+
+def _draw_motif_red_green_tail(rng, img, gap_y0, gap_y1):
+    """Motif A: a clip-width red bar with a dense green grouping at one tail."""
+    h, w = img.shape[:2]
+    motif_w = int(rng.integers(60, 90))
+    motif_h = int(rng.choice([3, 4]))
+    # Position may extend off either edge
+    x_start = int(rng.integers(-int(motif_w * 0.6), w - int(motif_w * 0.4)))
+    x_end = x_start + motif_w
+    gap_mid = (gap_y0 + gap_y1) // 2
+    bar_y0 = max(gap_y0, gap_mid - motif_h // 2 + int(rng.integers(-1, 2)))
+    bar_y1 = min(gap_y1, bar_y0 + motif_h)
+    if bar_y1 <= bar_y0:
+        return
+
+    # Red body
+    _draw_red_bar(rng, img, x_start, x_end, bar_y0, bar_y1)
+
+    # Green tail at one randomly-chosen end (15–25% of motif width)
+    tail_len = int(motif_w * rng.uniform(0.15, 0.25))
+    if rng.random() < 0.5:
+        tail_x0, tail_x1 = x_start, x_start + tail_len
+    else:
+        tail_x0, tail_x1 = x_end - tail_len, x_end
+    _draw_green_tail(rng, img, tail_x0, tail_x1, gap_y0, gap_y1, bar_y0, bar_y1)
+
+
+def _draw_motif_wide_with_gap(rng, img, gap_y0, gap_y1):
+    """Motif B: ~100 px wide × ~10 px tall red capsule with an inner slot.
+
+    The middle has an 8 px tall background-coloured slot leaving only 1 px of
+    red on top and 1 px on bottom. The slot does NOT extend to the horizontal
+    ends — the last 10–15 px on each side remain full-height solid red, so
+    the motif looks like a thick red bar with a narrow horizontal slit cut
+    through its centre (except near the ends).
+    """
+    h_img, w_img = img.shape[:2]
+    motif_w = int(rng.integers(90, 115))    # ~100 px
+    motif_h = int(rng.integers(9, 12))      # ~10 px ("in and around")
+    end_cap = int(rng.integers(10, 16))     # solid red at each end
+    slot_h = motif_h - 2                    # 1 px of red top + 1 px of red bottom
+
+    # Vertical placement — well centred in the inter-rail clear gap
+    gap_mid = (gap_y0 + gap_y1) // 2
+    bar_y0 = max(gap_y0, gap_mid - motif_h // 2 + int(rng.integers(-1, 2)))
+    bar_y1 = bar_y0 + motif_h
+    if bar_y1 > gap_y1:
+        return  # inter-rail gap too narrow for a 10 px motif
+
+    # Horizontal placement — may extend off either edge
+    x_start = int(rng.integers(-int(motif_w * 0.4), w_img - int(motif_w * 0.5)))
+    x_end = x_start + motif_w
+
+    # Build the shape from 4 solid pieces so the slot is exactly ballast colour
+    # (no need to "carve out" pixels):
+    #   left cap (full height) | top strip (1 px) | bottom strip (1 px) | right cap
+    _draw_red_bar(rng, img, x_start, x_start + end_cap, bar_y0, bar_y1)
+    _draw_red_bar(rng, img, x_end - end_cap, x_end, bar_y0, bar_y1)
+    if motif_w - 2 * end_cap > 0:
+        # Top edge of slot (1 px of red between caps)
+        _draw_red_bar(rng, img, x_start + end_cap, x_end - end_cap, bar_y0, bar_y0 + 1)
+        # Bottom edge of slot (1 px of red between caps)
+        _draw_red_bar(rng, img, x_start + end_cap, x_end - end_cap, bar_y1 - 1, bar_y1)
+
+
+def _add_inter_rail_features(rng, img, rails):
+    """Hard negatives inside the inter-rail zones.
+
+    Always present:
+      * A green dot inside the gap (a few pixels in diameter).
+      * 2–6 small scattered green/red dots per track set.
+
+    Rare (5% of images):
+      * Two clip-like motifs placed somewhere in the inter-rail zones. Each
+        motif is either:
+          A — a red bar with a dense green grouping at one end (one tail), or
+          B — a much wider red bar with a centre gap filled with background.
+        The pair always has the same type, sits in the same inter-rail zone,
+        and is separated horizontally; one of the two may extend off-screen.
+    """
+    h, w = img.shape[:2]
+
     for top_rail, bot_rail in [(rails[0], rails[1]), (rails[2], rails[3])]:
         gap_y0, gap_y1 = _gap(top_rail, bot_rail)
         if gap_y1 - gap_y0 < 6:
             continue
 
-        # 1. Green dot — somewhere in the left portion of the gap
-        green_cx = int(rng.integers(20, w // 2 - 40))
+        # Always-present green dot
+        green_cx = int(rng.integers(10, w - 10))
         green_cy = int(rng.integers(gap_y0 + 2, gap_y1 - 2))
         green_r = int(rng.integers(2, 4))
         _draw_blob(rng, img, green_cx, green_cy, green_r, GREEN_RGB)
 
-        # 2. Red straight line — to the right of the green dot
-        line_w = int(rng.integers(65, 76))
-        line_h = int(rng.choice([1, 2]))
-        min_start = green_cx + 25
-        max_start = max(min_start + 1, w - line_w - 5)
-        line_x0 = int(rng.integers(min_start, max_start))
-        # Off-centre vertically — never perfectly between the rails
-        gap_mid = (gap_y0 + gap_y1) // 2
-        offset = int(rng.choice([-3, -2, 2, 3]))
-        line_yc = gap_mid + offset
-        line_y0 = max(gap_y0 + 1, line_yc - line_h // 2)
-        line_y1 = min(gap_y1, line_y0 + line_h)
-        x_end = min(w, line_x0 + line_w)
-        if line_y1 > line_y0 and x_end > line_x0:
-            lh = line_y1 - line_y0
-            lw = x_end - line_x0
-            strength = float(rng.uniform(0.65, 0.95))
-            noise = rng.normal(0, 22, size=(lh, lw, 3))
-            line_col = np.clip((RAIL_RGB + noise) * strength, 0, 255)
-            alpha = rng.beta(3.0, 1.0, size=(lh, lw, 1))
-            hole = rng.random((lh, lw)) < 0.07
-            alpha[hole] *= rng.uniform(0, 0.2, size=(int(hole.sum()), 1))
-            bg = img[line_y0:line_y1, line_x0:x_end].astype(np.float32)
-            img[line_y0:line_y1, line_x0:x_end] = np.clip(
-                alpha * line_col + (1.0 - alpha) * bg, 0, 255
-            ).astype(np.uint8)
-
-        # 3. Scattered dots inside the inter-rail zone (2-6)
+        # Always-present scattered dots (2–6)
         n_dots = int(rng.integers(2, 7))
         for _ in range(n_dots):
             dx = int(rng.integers(0, w))
@@ -403,6 +496,26 @@ def _add_inter_rail_features(rng, img, rails):
             dr = int(rng.integers(1, 3))
             colour = GREEN_RGB if rng.random() < 0.5 else RED_NOISE_RGB
             _draw_blob(rng, img, dx, dy, dr, colour)
+
+    # Rare clip-like motifs — 5% of images. When triggered, place a pair of
+    # the same motif type in one inter-rail zone, separated horizontally,
+    # potentially overlapping the image edge.
+    if rng.random() < 0.05:
+        # Choose which inter-rail zone
+        top_rail, bot_rail = (
+            (rails[0], rails[1]) if rng.random() < 0.5 else (rails[2], rails[3])
+        )
+        gap_y0, gap_y1 = _gap(top_rail, bot_rail)
+        if gap_y1 - gap_y0 >= 6:
+            motif_type = "A" if rng.random() < 0.5 else "B"
+            drawer = (
+                _draw_motif_red_green_tail if motif_type == "A"
+                else _draw_motif_wide_with_gap
+            )
+            # Two instances. Each picks its own (possibly off-screen) position
+            # inside the drawer, so spacing emerges naturally.
+            drawer(rng, img, gap_y0, gap_y1)
+            drawer(rng, img, gap_y0, gap_y1)
 
 
 def _add_crocodile_clip(rng, img, rails, track):
