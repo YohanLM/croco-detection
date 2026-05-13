@@ -7,6 +7,11 @@ Colour encodes elevation above ground. The objective is to detect crocodile clip
 clamped between rails. This document specifies what to generate and what
 dataset configurations to produce.
 
+Returns from image analysis:
+  Background median RGB : [93 46  1]
+  Rail median RGB       : [244 134  23]
+  Sliced Wasserstein D  : 84.25  (well separated in colour space)
+
 ---
 
 ## Image structure
@@ -107,7 +112,7 @@ on any of the rails involved in the switch, including the branching one.
 ### Background noise
 
 A small random proportion of background pixels are **red** instead of the base
-dark reddish-brown colour. These are isolated pixels or 1–2 px clusters scattered
+dark reddish-brown colour (RGB=[93, 46, 1], SWD=84.25 ). These are isolated pixels or 1–2 px clusters scattered 
 across the ballast zones. They represent minor surface irregularities and prevent
 the model from treating "all red = rail."
 
