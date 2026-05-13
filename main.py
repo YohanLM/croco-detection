@@ -39,6 +39,9 @@ load_dataset = partial(load_synthetic_rails, config=SYNTHETIC_CONFIG, n_samples=
 DATA_DIR = Path("data/dataset")   # synthetic images/labels go under here (per-config subdir)
 WORK_DIR = Path("data/splits")    # train_N.txt, test.txt and YAML files go here
 RESULTS_FILE = Path("results.json")
+# Force YOLO to write training runs inside *this* project, regardless of any
+# stale absolute paths cached in ~/Library/Application Support/Ultralytics/settings.json.
+RUNS_DIR = Path(__file__).resolve().parent / "runs" / "detect"
 
 # ── Experiment config ─────────────────────────────────────────────────────────
 # Dense at the low end (where the curve is steepest), log-spaced higher up,
@@ -104,14 +107,16 @@ def main():
             epochs=EPOCHS,
             imgsz=IMGSZ,
             device=DEVICE,
-            name=f"size_{size}",  # run saved to runs/detect/size_N/
-            exist_ok=True,        # overwrite previous run with the same name
+            project=str(RUNS_DIR),  # force into croco_detection/runs/detect/
+            name=f"size_{size}",    # run saved to {project}/size_N/
+            exist_ok=True,          # overwrite previous run with the same name
             seed=SEED,
-            rect=True,            # rectangular training: pads to 640x128 instead of 640x640
+            rect=True,              # rectangular training: pads to 640x128 instead of 640x640
         )
 
-        # Evaluate the trained model on the fixed test set
-        metrics = model.val(data=str(yaml_path), device=DEVICE)
+        # Evaluate on the held-out test set — keep val runs in the same place
+        metrics = model.val(data=str(yaml_path), device=DEVICE,
+                            project=str(RUNS_DIR), name=f"size_{size}_val", exist_ok=True)
         results.append({
             "size": size,
             "mAP@.5":     float(metrics.box.map50),  # IoU threshold = 0.5
