@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from data_generation.dataset_synthetic_square import _make_image_square
+from dataset_synthetic_square import _make_image_square
 
 
 SPECS = [

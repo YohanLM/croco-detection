@@ -77,7 +77,7 @@ def test3() -> Config:
         syn_config   = "c30_m15",
         n_samples    = 4000,
         subset_sizes = [200, 800],
-        data_source  = Path("experiments/sq_c30_m15_col/dataset"),
+        data_source  = Path("experiments/sq_c30_m15_col/dataset/c30_m15"),
     )
 
 
@@ -99,7 +99,7 @@ def run(cfg: Config) -> None:
         info = {
             "images_dir": cfg.data_source / "images",
             "labels_dir": cfg.data_source / "labels",
-            "classes": ["clip"],
+            "classes": ["crocodile_clip"],
         }
     else:
         info = load_dataset(data_dir)

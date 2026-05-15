@@ -15,8 +15,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-import data_generation.dataset_synthetic as dataset_synthetic
-from data_generation.dataset_synthetic import _make_image
+import dataset_synthetic as dataset_synthetic
+from dataset_synthetic import _make_image
 
 
 # Each entry: (filename, config dict to drive _make_image)

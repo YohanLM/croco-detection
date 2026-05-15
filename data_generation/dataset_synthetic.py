@@ -459,7 +459,7 @@ def _draw_motif_wide_with_gap(rng, img, gap_y0, gap_y1):
         _draw_red_bar(rng, img, x_start + end_cap, x_end - end_cap, bar_y1 - 1, bar_y1)
 
 
-def _add_inter_rail_features(rng, img, rails):
+def _add_inter_rail_features(rng, img, rails, p_motif=0.05):
     """Hard negatives inside the inter-rail zones.
 
     Always present:
@@ -594,10 +594,10 @@ def _add_crocodile_clip(rng, img, rails, track):
     jx1 = int(rng.integers(-3, 4))
     jy0 = int(rng.integers(-1, 2))
     jy1 = int(rng.integers(-1, 2))
-    bx0 = max(0, min(IMG_W - 2, x0 + jx0))
-    bx1 = max(bx0 + 2, min(IMG_W, x1 + jx1))
-    by0 = max(0, min(IMG_H - 2, y0 + jy0))
-    by1 = max(by0 + 2, min(IMG_H, y1 + jy1))
+    bx0 = max(0, min(w - 2, x0 + jx0))
+    bx1 = max(bx0 + 2, min(w, x1 + jx1))
+    by0 = max(0, min(h - 2, y0 + jy0))
+    by1 = max(by0 + 2, min(h, y1 + jy1))
     return (bx0, by0, bx1, by1)
 
 
@@ -638,7 +638,7 @@ def _make_image(rng, config):
     # 6. Rail motifs on top of rails
     _add_rail_motifs(rng, img, rails, p_motif=config.get("p_motif", 0.05))
     # 7. Inter-rail hard negatives
-    _add_inter_rail_features(rng, img, rails)
+    _add_inter_rail_features(rng, img, rails, p_motif=config.get("p_motif", 0.05))
 
     # 8. Optional crocodile clip
     bbox = None
