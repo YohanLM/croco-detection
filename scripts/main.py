@@ -1,14 +1,17 @@
 """Train YOLO on increasingly large subsets of the dataset and compare metrics.
 
-Run with: `python main.py` (inside an active venv).
+Run with: `python scripts/main.py` (from project root, inside an active venv).
 Pick which experiment to run by changing the last line: run(test1) / run(test2) / run(test3).
 """
 
 import json
 import random
+import sys
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import yaml
 from dotenv import load_dotenv
@@ -25,7 +28,7 @@ EPOCHS     = 25
 IMGSZ      = 640
 DEVICE     = "mps"       # Apple Silicon GPU; use "cpu" or "0" (CUDA) on other machines
 SEED       = 42
-WEIGHTS    = "yolo11n.pt"
+WEIGHTS    = "models/yolo11n.pt"
 TEST_RATIO = 0.2
 
 
@@ -40,6 +43,7 @@ class Config:
     n_samples:   int
     subset_sizes: list[int]
     data_source: Path | None = None  # None = generate fresh; Path = reuse existing dataset
+    epochs:      int = EPOCHS
 
 
 def test1() -> Config:
@@ -78,6 +82,40 @@ def test3() -> Config:
         n_samples    = 4000,
         subset_sizes = [200, 800],
         data_source  = Path("experiments/sq_c30_m15_col/dataset/c30_m15"),
+    )
+
+
+def test4() -> Config:
+    """Convergence check — same 1600 images as test1, more epochs to test underfitting hypothesis."""
+    return Config(
+        run_name     = "sq_c30_m15_col_ep50",
+        use_square   = True,
+        use_grey     = False,
+        syn_config   = "c30_m15",
+        n_samples    = 4000,
+        subset_sizes = [1600],
+        data_source  = Path("experiments/sq_c30_m15_col/dataset/c30_m15"),
+        epochs       = 50,
+    )
+
+
+def test5() -> Config:
+    """LR elasticity check — same sizes as test1 but only 8 epochs.
+
+    If the drop from 800→2800 is driven by the cosine LR schedule decaying before
+    the model converges on larger sets, all sizes should perform similarly here
+    (LR still high, little difference in effective steps per epoch relative to warmup).
+    Extra data without extra variance should show no benefit at all.
+    """
+    return Config(
+        run_name     = "sq_c30_m15_col_ep8",
+        use_square   = True,
+        use_grey     = False,
+        syn_config   = "c30_m15",
+        n_samples    = 4000,
+        subset_sizes = [100, 200, 400, 800, 1600, 2800],
+        data_source  = Path("experiments/sq_c30_m15_col/dataset/c30_m15"),
+        epochs       = 8,
     )
 
 
@@ -148,7 +186,7 @@ def run(cfg: Config) -> None:
         model = YOLO(WEIGHTS)
         model.train(
             data     = str(yaml_path),
-            epochs   = EPOCHS,
+            epochs   = cfg.epochs,
             imgsz    = IMGSZ,
             device   = DEVICE,
             project  = str(runs_dir.resolve()),
@@ -181,4 +219,4 @@ def run(cfg: Config) -> None:
 
 
 if __name__ == "__main__":
-    run(test1())   # ← change to test2() or test3() to switch experiments
+    run(test5())   # ← change to test1() / test2() / test3() / test4() / test5() to switch experiments

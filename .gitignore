@@ -1,8 +1,18 @@
 .env
-data
-runs
-yolo11n.pt
-previews
-prev_results
-experiments
-data_generation/__pycache__
+.venv/
+.DS_Store
+
+# data assets (large files, not versioned)
+data/
+models/
+
+# experiment outputs
+runs/
+experiments/
+
+# generated plots
+metrics_vs_size.png
+
+# python
+**/__pycache__/
+*.pyc

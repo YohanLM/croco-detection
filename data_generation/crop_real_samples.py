@@ -25,7 +25,7 @@ Steps:
        - Pass 2: images with a good detection are cropped around their own
          detected centre; images with a bad detection (blob noise, too few
          components, low density) fall back to global_median_centre.
-  4. Crop height is always CROP_HEIGHT px. Save to real_samples_cropped/.
+  4. Crop height is always CROP_HEIGHT px. Save to data/real_samples_cropped/.
 """
 
 from pathlib import Path
@@ -34,8 +34,8 @@ import numpy as np
 from PIL import Image
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-SAMPLES_DIR = Path("real_samples")
-OUTPUT_DIR  = Path("real_samples_cropped")
+SAMPLES_DIR = Path("data/real_samples")
+OUTPUT_DIR  = Path("data/real_samples_cropped")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ── Parameters ─────────────────────────────────────────────────────────────────

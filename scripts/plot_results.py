@@ -5,13 +5,13 @@ validation on the saved best.pt weights to extract optimal-F1 precision/recall/F
 Results are cached back into results.json to avoid re-running val() on subsequent calls.
 
 Usage:
-    python plot_results.py [experiment_dir ...]
+    python scripts/plot_results.py [experiment_dir ...]
 
     # single experiment (default: sq_c30_m15_col)
-    python plot_results.py
+    python scripts/plot_results.py
 
     # compare multiple experiments
-    python plot_results.py experiments/sq_c30_m15_col experiments/sq_c30_m15_grey
+    python scripts/plot_results.py experiments/sq_c30_m15_col experiments/sq_c30_m15_grey
 """
 
 import json

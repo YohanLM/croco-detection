@@ -1,6 +1,0 @@
-kagglehub
-ultralytics
-python-dotenv
-Pillow
-numpy
-pyyaml

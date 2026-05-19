@@ -9,11 +9,11 @@ Two-step approach, both cacheable:
 Then stratify errors by motif presence and plot.
 
 Usage:
-    python analyse_motif_errors.py                      # default: size_2800 model
-    python analyse_motif_errors.py --size 800           # choose training size
-    python analyse_motif_errors.py --conf 0.25          # confidence threshold
-    python analyse_motif_errors.py --refresh-metadata   # force RNG replay
-    python analyse_motif_errors.py --refresh-preds      # force re-inference
+    python scripts/analyse_motif_errors.py                      # default: size_2800 model
+    python scripts/analyse_motif_errors.py --size 800           # choose training size
+    python scripts/analyse_motif_errors.py --conf 0.25          # confidence threshold
+    python scripts/analyse_motif_errors.py --refresh-metadata   # force RNG replay
+    python scripts/analyse_motif_errors.py --refresh-preds      # force re-inference
 """
 
 import argparse
@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-REPO_ROOT   = Path(__file__).parent
+REPO_ROOT   = Path(__file__).resolve().parent.parent
 EXP_DIR     = REPO_ROOT / "experiments" / "sq_c30_m15_col"
 DATASET_DIR = EXP_DIR / "dataset" / "c30_m15"
 SPLITS_DIR  = EXP_DIR / "splits"
@@ -173,9 +173,10 @@ def run_inference(size: int, conf: float, force: bool = False) -> dict[str, dict
     results = model.predict(
         [str(p) for p in test_images],
         conf=conf,
-        device=DEVICE,
+        device="cpu",
         verbose=False,
         stream=True,
+        batch=1,
     )
     for img_path, result in zip(test_images, results):
         stem = img_path.stem
@@ -184,13 +185,15 @@ def run_inference(size: int, conf: float, force: bool = False) -> dict[str, dict
 
         pred_boxes = result.boxes.xyxy.cpu().numpy().tolist() if len(result.boxes) else []
 
-        # Determine outcome: if GT has a clip, best IoU with any prediction
-        if gt_box is not None:
+        # Determine outcome. Any image with 2+ predictions is a DOUBLE regardless
+        # of whether one box matches GT — predicting two clips is always wrong.
+        if len(pred_boxes) >= 2:
+            outcome = "DOUBLE"
+        elif gt_box is not None:
             best_iou = max((_iou(gt_box, pb) for pb in pred_boxes), default=0.0)
-            tp = best_iou >= IOU_THR
-            outcome = "TP" if tp else "FN"
+            outcome = "TP" if best_iou >= IOU_THR else "FN"
         else:
-            outcome = "FP" if len(pred_boxes) > 0 else "TN"
+            outcome = "FP" if len(pred_boxes) == 1 else "TN"
 
         predictions[stem] = {
             "outcome":    outcome,
@@ -222,7 +225,7 @@ def analyse_and_plot(metadata: dict, predictions: dict, size: int) -> None:
         return [r for r in rows if r["has_motif"] == motif]
 
     def _counts(rows):
-        c = {"TP": 0, "FP": 0, "TN": 0, "FN": 0}
+        c = {"TP": 0, "FP": 0, "TN": 0, "FN": 0, "DOUBLE": 0}
         for r in rows:
             c[r["outcome"]] += 1
         return c
@@ -248,6 +251,14 @@ def analyse_and_plot(metadata: dict, predictions: dict, size: int) -> None:
         denom = c["TP"] + c["FN"]
         return c["TP"] / denom if denom else float("nan")
 
+    # DOUBLE breakdown: cross has_motif with gt_has_clip
+    def _double_detail(rows):
+        clip_motif    = sum(1 for r in rows if r["outcome"] == "DOUBLE" and     r["gt_has_clip"] and     r["has_motif"])
+        clip_no_motif = sum(1 for r in rows if r["outcome"] == "DOUBLE" and     r["gt_has_clip"] and not r["has_motif"])
+        no_clip_motif = sum(1 for r in rows if r["outcome"] == "DOUBLE" and not r["gt_has_clip"] and     r["has_motif"])
+        no_clip_no_motif = sum(1 for r in rows if r["outcome"] == "DOUBLE" and not r["gt_has_clip"] and not r["has_motif"])
+        return clip_motif, clip_no_motif, no_clip_motif, no_clip_no_motif
+
     # ── Summary print ──────────────────────────────────────────────────────────
     print(f"\n{'':30s} {'No motif':>12} {'With motif':>12}")
     print(f"{'Images':30s} {len(no_motif):>12} {len(with_motif):>12}")
@@ -255,10 +266,19 @@ def analyse_and_plot(metadata: dict, predictions: dict, size: int) -> None:
     print(f"{'FP':30s} {c_no['FP']:>12} {c_yes['FP']:>12}")
     print(f"{'TN':30s} {c_no['TN']:>12} {c_yes['TN']:>12}")
     print(f"{'FN':30s} {c_no['FN']:>12} {c_yes['FN']:>12}")
+    print(f"{'DOUBLE (2+ preds)':30s} {c_no['DOUBLE']:>12} {c_yes['DOUBLE']:>12}")
     print(f"{'FP rate (false alarm)':30s} {_fp_rate(c_no):>12.3f} {_fp_rate(c_yes):>12.3f}")
     print(f"{'FN rate (miss rate)':30s} {_fn_rate(c_no):>12.3f} {_fn_rate(c_yes):>12.3f}")
     print(f"{'Precision':30s} {_precision(c_no):>12.3f} {_precision(c_yes):>12.3f}")
     print(f"{'Recall':30s} {_recall(c_no):>12.3f} {_recall(c_yes):>12.3f}")
+
+    print(f"\n── DOUBLE breakdown (clip present? × motif present?) ──")
+    print(f"{'':35s} {'count':>8}")
+    cm, cnm, ncm, ncnm = _double_detail(rows)
+    print(f"{'clip + motif  (fired on both)':35s} {cm:>8}")
+    print(f"{'clip, no motif  (duplicate on clip)':35s} {cnm:>8}")
+    print(f"{'no clip + motif  (motif → 2 FPs)':35s} {ncm:>8}")
+    print(f"{'no clip, no motif  (pure hallucination)':35s} {ncnm:>8}")
 
     # ── Plot ───────────────────────────────────────────────────────────────────
     labels  = ["No motif", "With motif"]
@@ -268,14 +288,13 @@ def analyse_and_plot(metadata: dict, predictions: dict, size: int) -> None:
     fig, axes = plt.subplots(1, 3, figsize=(13, 5))
     fig.suptitle(f"Error breakdown by motif presence  (model size={size})", fontsize=13)
 
-    colors_outcome = {"TP": "#4caf50", "TN": "#90caf9", "FP": "#ef5350", "FN": "#ff9800"}
+    colors_outcome = {"TP": "#4caf50", "TN": "#90caf9", "FP": "#ef5350",
+                      "FN": "#ff9800", "DOUBLE": "#ab47bc"}
 
     # Left: stacked bar of outcome counts
     ax = axes[0]
     bottoms = [0, 0]
-    for outcome in ["TP", "TN", "FP", "FN"]:
-        vals = [c["outcome_count"] if "outcome_count" in c else c.get(outcome, 0)
-                for c in c_pairs]
+    for outcome in ["TP", "TN", "FP", "FN", "DOUBLE"]:
         vals = [c[outcome] for c in c_pairs]
         ax.bar(labels, vals, bottom=bottoms, label=outcome,
                color=colors_outcome[outcome], edgecolor="white", linewidth=0.5)
@@ -321,6 +340,145 @@ def analyse_and_plot(metadata: dict, predictions: dict, size: int) -> None:
     plt.show()
 
 
+# ── Step 4: visualise double-prediction cases ─────────────────────────────────
+
+def visualize_doubles(metadata: dict, predictions: dict, size: int,
+                      conf: float, n: int = 5) -> None:
+    """Sample DOUBLE cases, re-run inference to get box coords, and plot."""
+    from ultralytics import YOLO
+    from PIL import Image as PILImage
+
+    # Collect all DOUBLE stems, split by motif presence
+    with_motif    = [s for s, p in predictions.items()
+                     if p["outcome"] == "DOUBLE" and metadata.get(s, {}).get("has_motif")]
+    without_motif = [s for s, p in predictions.items()
+                     if p["outcome"] == "DOUBLE" and not metadata.get(s, {}).get("has_motif")]
+
+    print(f"DOUBLE cases: {len(with_motif)} with motif, {len(without_motif)} without motif")
+    if not with_motif and not without_motif:
+        print("No DOUBLE cases found.")
+        return
+
+    # Sample: at least 1 from with_motif if available, fill the rest from without_motif
+    rng = np.random.default_rng(0)
+    sample = []
+    if with_motif:
+        sample.append(rng.choice(with_motif))
+    remaining = n - len(sample)
+    pool = [s for s in without_motif if s not in sample]
+    sample += rng.choice(pool, size=min(remaining, len(pool)), replace=False).tolist()
+
+    # Re-run inference on just the sampled images to get box coordinates
+    weight = DETECT_DIR / f"size_{size}" / "weights" / "best.pt"
+    model  = YOLO(str(weight))
+    img_paths = [DATASET_DIR / "images" / f"{s}.png" for s in sample]
+
+    results = model.predict(
+        [str(p) for p in img_paths],
+        conf=conf,
+        device="cpu",
+        verbose=False,
+    )
+
+    PRED_COLORS = ["#ef5350", "#ff9800", "#ab47bc", "#29b6f6"]
+    ZOOM_PAD    = 20   # pixels of padding around the zoomed region
+
+    # Two rows per image: full image on top, zoomed crop on bottom
+    fig, axes = plt.subplots(2, len(sample),
+                             figsize=(4 * len(sample), 8),
+                             gridspec_kw={"height_ratios": [3, 1]})
+    if len(sample) == 1:
+        axes = axes.reshape(2, 1)
+
+    for col, (stem, result) in enumerate(zip(sample, results)):
+        img = np.array(PILImage.open(DATASET_DIR / "images" / f"{stem}.png"))
+        H, W = img.shape[:2]
+
+        ax_full = axes[0, col]
+        ax_zoom = axes[1, col]
+
+        ax_full.imshow(img)
+        ax_full.axis("off")
+
+        has_motif   = metadata.get(stem, {}).get("has_motif", False)
+        gt_has_clip = predictions[stem]["gt_has_clip"]
+        title = f"{stem}\n{'⚑ motif' if has_motif else 'no motif'}"
+        title += f"  ·  {'clip' if gt_has_clip else 'no clip'} (GT)"
+        ax_full.set_title(title, fontsize=7)
+
+        # Ground-truth box — green dashed
+        gt = _read_gt_box(DATASET_DIR / "labels" / f"{stem}.txt") if gt_has_clip else None
+        if gt:
+            x1, y1, x2, y2 = gt
+            ax_full.add_patch(plt.Rectangle(
+                (x1, y1), x2 - x1, y2 - y1,
+                linewidth=2, edgecolor="#4caf50", facecolor="none", linestyle="--"))
+            ax_full.text(x1, y1 - 4, "GT", color="#4caf50", fontsize=6, fontweight="bold")
+
+        # Predicted boxes — distinct colour per box
+        boxes = result.boxes.xyxy.cpu().numpy()
+        confs = result.boxes.conf.cpu().numpy()
+        for i, ((x1, y1, x2, y2), c) in enumerate(zip(boxes, confs)):
+            color = PRED_COLORS[i % len(PRED_COLORS)]
+            ax_full.add_patch(plt.Rectangle(
+                (x1, y1), x2 - x1, y2 - y1,
+                linewidth=2, edgecolor=color, facecolor=color, alpha=0.15))
+            ax_full.add_patch(plt.Rectangle(
+                (x1, y1), x2 - x1, y2 - y1,
+                linewidth=2, edgecolor=color, facecolor="none"))
+            ax_full.text(x2 + 2, (y1 + y2) / 2, f"#{i+1} {c:.2f}",
+                         color=color, fontsize=6, fontweight="bold", va="center")
+
+        # Zoom crop: bounding box that contains all predictions (+ GT if present)
+        all_boxes = list(boxes)
+        if gt:
+            all_boxes.append(gt)
+        if all_boxes:
+            all_boxes = np.array(all_boxes)
+            zx1 = max(0,  int(all_boxes[:, 0].min()) - ZOOM_PAD)
+            zy1 = max(0,  int(all_boxes[:, 1].min()) - ZOOM_PAD)
+            zx2 = min(W,  int(all_boxes[:, 2].max()) + ZOOM_PAD)
+            zy2 = min(H,  int(all_boxes[:, 3].max()) + ZOOM_PAD)
+            crop = img[zy1:zy2, zx1:zx2]
+            ax_zoom.imshow(crop)
+            # Redraw boxes in crop coordinates
+            if gt:
+                gx1, gy1, gx2, gy2 = gt
+                ax_zoom.add_patch(plt.Rectangle(
+                    (gx1 - zx1, gy1 - zy1), gx2 - gx1, gy2 - gy1,
+                    linewidth=2, edgecolor="#4caf50", facecolor="none", linestyle="--"))
+            for i, (x1, y1, x2, y2) in enumerate(boxes):
+                color = PRED_COLORS[i % len(PRED_COLORS)]
+                ax_zoom.add_patch(plt.Rectangle(
+                    (x1 - zx1, y1 - zy1), x2 - x1, y2 - y1,
+                    linewidth=2, edgecolor=color, facecolor=color, alpha=0.15))
+                ax_zoom.add_patch(plt.Rectangle(
+                    (x1 - zx1, y1 - zy1), x2 - x1, y2 - y1,
+                    linewidth=2, edgecolor=color, facecolor="none"))
+        ax_zoom.axis("off")
+        ax_zoom.set_title("zoom", fontsize=6, pad=2)
+
+    # Legend
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    legend = [
+        Line2D([0], [0], color="#4caf50", linewidth=2, linestyle="--", label="GT (ground truth)"),
+    ] + [
+        Patch(facecolor=PRED_COLORS[i], alpha=0.5, label=f"Prediction #{i+1}")
+        for i in range(2)
+    ]
+    fig.legend(handles=legend, loc="lower center", ncol=3, fontsize=9,
+               bbox_to_anchor=(0.5, -0.01))
+
+    fig.suptitle(f"Double-prediction cases  (model size={size}, conf≥{conf})",
+                 fontsize=11)
+    fig.tight_layout()
+    out = EXP_DIR / f"double_predictions_{size}.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    print(f"Saved to {out}")
+    plt.show()
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -333,6 +491,10 @@ def parse_args():
                    help="Force RNG replay even if metadata.json exists")
     p.add_argument("--refresh-preds", action="store_true",
                    help="Force re-inference even if prediction cache exists")
+    p.add_argument("--visualize-doubles", action="store_true",
+                   help="Show sample images with double predictions")
+    p.add_argument("--n-doubles", type=int, default=5,
+                   help="Number of double-prediction images to show (default: 5)")
     return p.parse_args()
 
 
@@ -341,3 +503,5 @@ if __name__ == "__main__":
     metadata    = build_metadata(force=args.refresh_metadata)
     predictions = run_inference(args.size, args.conf, force=args.refresh_preds)
     analyse_and_plot(metadata, predictions, args.size)
+    if args.visualize_doubles:
+        visualize_doubles(metadata, predictions, args.size, args.conf, n=args.n_doubles)
