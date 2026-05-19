@@ -166,7 +166,7 @@ def run(cfg: Config) -> None:
     # ── 1. Prepare the dataset ────────────────────────────────────────────────
     run_dir.mkdir(parents=True, exist_ok=True)
     data_dir = cfg.data_source if cfg.data_source is not None else run_dir / "dataset"
-    if cfg.data_source is not None:
+    if cfg.data_source is not None and (cfg.data_source / "images").exists():
         info = {
             "images_dir": cfg.data_source / "images",
             "labels_dir": cfg.data_source / "labels",
