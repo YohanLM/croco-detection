@@ -1,12 +1,14 @@
 """Run the 800-image model on the 18 real samples and display results visually.
 
 Usage:
-    python scripts/eval_real_samples.py
+    python scripts/eval_real_samples.py          # default conf=0.25
+    python scripts/eval_real_samples.py --conf 0.05
 
-Outputs a matplotlib figure saved to experiments/sq_c30_m15_col/real_samples_eval.png
+Outputs a matplotlib figure saved to experiments/sq_c30_m15_col/real_samples_eval_confXXX.png
 and displayed on screen.
 """
 
+import argparse
 from pathlib import Path
 
 import matplotlib.patches as mpatches
@@ -15,12 +17,16 @@ import numpy as np
 from PIL import Image
 from ultralytics import YOLO
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--conf", type=float, default=0.25, help="Detection confidence threshold")
+args = parser.parse_args()
+
 # ── Config ────────────────────────────────────────────────────────────────────
 WEIGHTS     = Path("experiments/sq_c30_m15_col/detect/size_800/weights/best.pt")
 IMAGES_DIR  = Path("data/real_samples")
-OUT_PATH    = Path("experiments/sq_c30_m15_col/real_samples_eval.png")
-CONF_THRESH = 0.25   # detection confidence threshold
+CONF_THRESH = args.conf
 IMGSZ       = 640
+OUT_PATH    = Path(f"experiments/sq_c30_m15_col/real_samples_eval_conf{int(CONF_THRESH*100):03d}.png")
 
 # Ground-truth: which image indices actually contain a crocodile clip
 CLIP_INDICES = {0, 16, 22, 55, 56}
@@ -117,7 +123,7 @@ legend_handles = [
     mpatches.Patch(color="red",    label="FN — clip present, missed"),
     mpatches.Patch(color="orange", label="FP — no clip, false alarm"),
     mpatches.Patch(color="gray",   label="TN — no clip, correctly ignored"),
-    mpatches.Patch(color="lime",   label="bounding box (conf threshold = 0.25)"),
+    mpatches.Patch(color="lime",   label=f"bounding box (conf threshold = {CONF_THRESH:.2f})"),
 ]
 fig.legend(
     handles=legend_handles,

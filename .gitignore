@@ -1,10 +1,10 @@
-.env
 .venv/
 .DS_Store
 .vscode/
 
 # data assets (large files, not versioned)
-data/
+data/previews/
+data/real_samples_cropped/
 models/
 
 # experiment outputs
