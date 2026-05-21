@@ -1,3 +1,25 @@
+# # ── MONKEYPATCH (at the beginning of your script) ────────────────────────────
+# from ultralytics.utils import downloads
+
+# GITHUB_BASE     = "https://github.com/ultralytics/assets/releases/download"
+# ARTIFACTORY_BASE = "https://artefact-repo.apps.eul.sncf.fr/artifactory/raw-public/ultralytics/assets/releases/download"
+
+# _orig_safe_download = downloads.safe_download
+
+# def _patched_safe_download(url, *args, **kwargs):
+# 	if isinstance(url, str) and GITHUB_BASE in url:
+# 		new_url = url.replace(GITHUB_BASE, ARTIFACTORY_BASE)
+# 		print(f"[PATCH] Redirection :")
+# 		print(f"        FROM : {url}")
+# 		print(f"        TO   : {new_url}")
+# 		url = new_url
+# 	return _orig_safe_download(url, *args, **kwargs)
+
+# downloads.safe_download = _patched_safe_download
+# print("[PATCH] Monkeypatch appliqué ✓")
+# # 
+
+
 """Train YOLO on increasingly large subsets of the dataset and compare metrics.
 
 Run with: `python scripts/main.py` (from project root, inside an active venv).
