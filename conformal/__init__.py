@@ -1,11 +1,14 @@
 from conformal.calibrator import (
     Calibrator,
+    EfficiencyMetric,
+    EvaluationResult,
     ExpansionFunction,
     LossFunction,
     PredictionFunction,
     Risk,
     crc_finite_sample_correction,
 )
+from conformal.efficiency import box_count, total_box_area
 from conformal.dataset import (
     CalibrationDataset,
     PredictionDataset,
@@ -29,11 +32,16 @@ from conformal.prediction import ModelLike, YoloPredictor
 __all__ = [
     # framework
     "Calibrator",
+    "EfficiencyMetric",
+    "EvaluationResult",
     "ExpansionFunction",
     "LossFunction",
     "PredictionFunction",
     "Risk",
     "crc_finite_sample_correction",
+    # efficiency
+    "total_box_area",
+    "box_count",
     # prediction
     "ModelLike",
     "YoloPredictor",
