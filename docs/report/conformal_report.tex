@@ -160,6 +160,27 @@ Because the two failure events partition the end-to-end failure
 the union bound certifies the global $\alpha$. The honest validator is the
 end-to-end empirical risk on the full test set.
 
+\paragraph{Top-1 prediction selection.} SeqCRC additionally wraps the detector in
+a \code{TopKPredictor} ($K=1$, file \code{conformal/prediction/top1.py}): only the
+single highest-confidence box per frame is kept. This is a deliberate choice for
+the single-object regime --- each cropped frame contains at most one croco clip.
+Phase~1 drives the objectness threshold down toward the floor ($0.001$) to recover
+missed targets; without top-1 selection that low threshold would flood every frame
+with spurious low-confidence boxes, inflating the prediction-set area in Phase~2
+and degrading precision. Keeping the top box turns ``lower the threshold'' into
+``trust the detector's best guess for the one object,'' so the recovered detections
+are the right ones rather than a swarm of false positives. The price is a feasibility
+constraint: with $K=1$, Phase~1 can only meet $\alpha_{\text{cnf}}$ if that budget
+exceeds the irreducible rate at which the top-1 box is \emph{not} the target (i.e.\
+the highest-confidence box is a false positive); \code{scripts/diagnose\_top1.py}
+measures that rate to confirm the chosen $\alpha_{\text{cnf}}$ is admissible. The
+single-knob CRC experiments (\S5.1--5.3) keep all boxes, since they never lower the
+threshold; top-1 is specific to SeqCRC's Phase~1. Top-1 selection was a refinement
+added after the first SeqCRC run: the headline $50/50$ run (\code{seqcrc\_09}) keeps
+all boxes, while the budget-split sweep in \S\ref{sec:seqcrc} uses top-1 --- as the
+near-identical risks show, top-1 mainly buys precision and a smaller prediction set,
+not lower risk.
+
 % =====================================================================
 \section{Evaluation methodology}
 % =====================================================================
