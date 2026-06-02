@@ -31,7 +31,7 @@ from conformal.loss import (
     make_iou_detection_risk,
     pixel_risk,
 )
-from conformal.prediction import ModelLike, YoloPredictor
+from conformal.prediction import ModelLike, TopKPredictor, YoloPredictor
 from conformal.seqcrc import (
     SeqCRCInferencer,
     build_survivor_split,
@@ -53,6 +53,7 @@ __all__ = [
     "box_count",
     # prediction
     "ModelLike",
+    "TopKPredictor",
     "YoloPredictor",
     # expansion
     "additive_expansion",

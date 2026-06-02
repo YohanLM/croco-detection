@@ -51,6 +51,7 @@ from conformal.loss.detection import (
     make_iou_detection_risk,
     make_iou_hit,
 )
+from conformal.prediction.top1 import TopKPredictor
 from conformal.prediction.yolo import YoloPredictor
 from conformal.seqcrc import (
     SeqCRCInferencer,
@@ -76,12 +77,22 @@ SPLITS = ROOT / "data" / "splits"
 
 # Global risk budget and its union-bound split. alpha = alpha_cnf + alpha_loc.
 ALPHA = 0.09
-ALPHA_CNF_FRACTION = 0.5      # fraction of the budget given to Phase 1 (0.5 = equal)
+ALPHA_CNF_FRACTION = 0.35     # fraction of the budget given to Phase 1. Smaller values
+                              # force a tighter Phase-1 guarantee -> lower T_eff -> fewer
+                              # missed detections. Must stay above the irreducible miss
+                              # rate at the floor (~0.029 observed); if Phase 1 fails,
+                              # raise this slightly.
 
 # Phase-1 hit criterion. "overlap" = any nonzero pixel overlap counts as a hit
 # (lenient); "iou" = require IoU >= IOU_MATCH (strict, cheaper Phase 2).
 HIT_CRITERION = "overlap"     # "overlap" | "iou"
 IOU_MATCH = 0.10              # used only when HIT_CRITERION == "iou"
+
+# Single-object regime: keep only the TOP_K highest-confidence boxes per frame
+# so lowering the threshold never floods duplicates/false positives for the one
+# object. With TOP_K=1, Phase 1 is feasible only if alpha_cnf exceeds the rate
+# at which top-1 is NOT the target (run diagnose_top1.py to read that rate).
+TOP_K = 1                     # set to None to disable top-k selection (keep all boxes)
 
 CONF_FLOOR = 0.001            # Phase-1 admission floor: YOLO runs here
 STD_THRESHOLD = 0.30          # model's normal operating threshold (system baseline)
@@ -137,6 +148,7 @@ def _run(alpha_cnf: float, alpha_loc: float, output_dir: Path) -> None:
           f"alpha_loc={alpha_loc:.4f} = {alpha_cnf + alpha_loc:.4f}")
     print(f"  Phase-1 loss         : {phase1_label}")
     print(f"  Phase-2 loss         : coverage-indicator ({COVERAGE_FRACTION:.0%})")
+    print(f"  top-k per frame      : {TOP_K if TOP_K is not None else 'all boxes'}")
     print(f"  confidence floor     : {CONF_FLOOR}")
     print(f"  conf lambda range    : {CONF_LAMBDA_RANGE}")
     print(f"  additive lambda range: {ADDITIVE_LAMBDA_RANGE} (px/side)")
@@ -147,7 +159,11 @@ def _run(alpha_cnf: float, alpha_loc: float, output_dir: Path) -> None:
 
     rule("LOADING MODEL")
     predictor = YoloPredictor(str(WEIGHTS))
-    print("  YOLO model loaded")
+    if TOP_K is not None:
+        predictor = TopKPredictor(predictor, k=TOP_K)
+        print(f"  YOLO model loaded (keeping top-{TOP_K} box per frame)")
+    else:
+        print("  YOLO model loaded (all boxes per frame)")
     calib_loader = make_calibration_loader(calib_path, batch_size=16, num_workers=4)
     test_loader = make_calibration_loader(test_path, batch_size=16, num_workers=4)
 
@@ -230,8 +246,10 @@ def _run(alpha_cnf: float, alpha_loc: float, output_dir: Path) -> None:
         alpha=ALPHA,
         confidence_threshold=t_eff,
     )
-    lo, hi = ADDITIVE_LAMBDA_RANGE
-    lambdas = [lo + i * (hi - lo) / 20 for i in range(21)]
+    # Dense near 0 (where λ_loc typically lands for well-localised detectors),
+    # then coarser up to the ceiling so the full range is visible.
+    lambdas = [0.0, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0,
+               10.0, 20.0, 30.0, 50.0, 75.0, 100.0]
     detection_counters = make_detection_counters(IOU_MATCH)
     res = e2e.evaluate(
         test_loader, lam_loc, efficiency_fn=total_box_area,

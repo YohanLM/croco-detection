@@ -451,7 +451,14 @@ class Calibrator:
                 "and lock the per-image loss at 1.0 regardless of λ "
                 "(see methodology §5)."
             )
-        return float(brentq(crc_gap, lo, hi, xtol=1e-4))
+        lam = float(brentq(crc_gap, lo, hi, xtol=1e-6))
+        # The CRC gap is a step function (discrete loss): brentq can land just
+        # before a step where the gap is still slightly positive. If so, step
+        # forward by 2×xtol — smaller than any meaningful loss step — to land
+        # on the guaranteed side (gap ≤ 0) without adding measurable conservatism.
+        if crc_gap(lam) > 0:
+            lam = min(lam + 2e-6, hi)
+        return lam
 
     # ── evaluation: measure the effect of a calibrated λ on a labeled split ──
 
