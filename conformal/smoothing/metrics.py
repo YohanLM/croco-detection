@@ -284,6 +284,7 @@ def sweep(
     iou_target: float = 0.5,
     cert_conf: float = 0.0,
     noise_fn=None,
+    device: str | None = None,
 ) -> dict[float, dict[str, float]]:
     """Mean of every per-image metric over `dataset`, for each `sigma`.
 
@@ -294,6 +295,8 @@ def sweep(
     """
     items = list(dataset)
     kwargs = {} if noise_fn is None else {"noise_fn": noise_fn}
+    if device is not None:
+        kwargs["device"] = device
     out: dict[float, dict[str, float]] = {}
     for sigma in sigmas:
         predictor = SmoothedTop1Predictor(
@@ -322,6 +325,7 @@ def mc_se_vs_n(
     quorum: float = 0.5,
     conf_floor: float = 0.05,
     seed: int | None = 0,
+    device: str | None = None,
 ) -> dict[int, float]:
     """Mean Monte-Carlo SE (px) of the median vs `N`, at a fixed `sigma`.
 
@@ -333,6 +337,7 @@ def mc_se_vs_n(
     for n in n_values:
         predictor = SmoothedTop1Predictor(
             base, int(n), sigma, quorum=quorum, conf_floor=conf_floor, seed=seed,
+            **({} if device is None else {"device": device}),
         )
         ses: list[float] = []
         for path, _gt in items:

@@ -44,6 +44,8 @@ WEIGHTS = ROOT / "models" / "best.pt"
 TEST_SPLIT = ROOT / "data" / "splits" / "test.txt"
 OUT_DIR = ROOT / "outputs" / "smoothing_eval"
 
+DEVICE = "cuda"          # "cuda" / "mps" / "cpu"
+
 SIGMAS = [0.0, 0.02, 0.05, 0.08, 0.12, 0.20]
 N_SAMPLES = 50
 QUORUM = 0.5
@@ -90,6 +92,7 @@ def _run() -> None:
     rule("CONFIG")
     print(f"  weights        : {WEIGHTS}")
     print(f"  test split     : {TEST_SPLIT}")
+    print(f"  device         : {DEVICE}")
     print(f"  sigmas         : {SIGMAS}")
     print(f"  N samples      : {N_SAMPLES}")
     print(f"  quorum         : {QUORUM}")
@@ -116,7 +119,7 @@ def _run() -> None:
         base, items, SIGMAS, N_SAMPLES,
         confidence_threshold=CONF_THRESHOLD, quorum=QUORUM, conf_floor=CONF_FLOOR,
         seed=SEED, cert_epsilon=CERT_EPSILON, iou_target=CERT_IOU_TARGET,
-        cert_conf=CERT_CONF,
+        cert_conf=CERT_CONF, device=DEVICE,
     )
     _print_table(table)
 
@@ -125,7 +128,7 @@ def _run() -> None:
     se_curve = metrics.mc_se_vs_n(
         base, items, MC_SIGMA, MC_N_VALUES,
         confidence_threshold=CONF_THRESHOLD, quorum=QUORUM, conf_floor=CONF_FLOOR,
-        seed=SEED,
+        seed=SEED, device=DEVICE,
     )
     for n, se in se_curve.items():
         print(f"     N={n:>4}  ->  mean median SE = {se:.3f} px")

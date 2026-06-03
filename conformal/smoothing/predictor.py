@@ -134,6 +134,7 @@ def collect_samples(
     quorum: float = 0.5,
     conf_threshold: float = 0.30,
     generator: torch.Generator | None = None,
+    device: str | torch.device | None = None,
 ) -> SmoothingSamples:
     """Run the `N`-sample smoothing pass for one image; return the full record.
 
@@ -163,7 +164,7 @@ def collect_samples(
     return collect_samples_tensor(
         base, load_image_chw01(image_path), sigma, n_samples,
         noise_fn=noise_fn, conf_floor=conf_floor, quorum=quorum,
-        conf_threshold=conf_threshold, generator=generator,
+        conf_threshold=conf_threshold, generator=generator, device=device,
     )
 
 
@@ -178,13 +179,20 @@ def collect_samples_tensor(
     quorum: float = 0.5,
     conf_threshold: float = 0.30,
     generator: torch.Generator | None = None,
+    device: str | torch.device | None = None,
 ) -> SmoothingSamples:
     """`collect_samples` for an already-loaded `[3, H, W]` `[0, 1]` RGB image.
 
     Used when the pixels are produced in memory rather than read from disk — e.g.
     an adversarial example from `conformal.smoothing.attack`. Identical Monte-Carlo
     logic; only the image source differs.
+
+    `device` controls where the N-copy batch and the noise are built. When None
+    the image's current device is used. Pass "cuda" / "mps" so that the full
+    noisy batch stays on the accelerator and is forwarded in one GPU call.
     """
+    if device is not None:
+        image = image.to(device)
     batch = image.unsqueeze(0).expand(n_samples, -1, -1, -1)  # [N, 3, H, W] (view)
     noisy = noise_fn(batch.clone(), sigma, generator)       # clone: noise writes in place
     per_copy = base.predict_arrays(noisy, conf_floor)       # list of N [P, 5]
@@ -264,6 +272,7 @@ class SmoothedTop1Predictor:
         quorum: float = 0.5,
         conf_floor: float = 0.05,
         seed: int | None = None,
+        device: str | torch.device | None = None,
     ) -> None:
         self.base = base
         self.n_samples = n_samples
@@ -272,13 +281,15 @@ class SmoothedTop1Predictor:
         self.quorum = quorum
         self.conf_floor = conf_floor
         self.seed = seed
+        self.device = device
 
     def _generator_for(self, image_path: str) -> torch.Generator | None:
         """A per-image RNG seeded from `(seed, path)` — stable, order-independent."""
         if self.seed is None:
             return None
         salt = zlib.crc32(image_path.encode("utf-8")) & 0xFFFFFFFF
-        g = torch.Generator()
+        device = self.device if self.device is not None else "cpu"
+        g = torch.Generator(device=device)
         g.manual_seed((self.seed * 1_000_003 + salt) & 0x7FFF_FFFF_FFFF_FFFF)
         return g
 
@@ -290,7 +301,7 @@ class SmoothedTop1Predictor:
             self.base, image_path, self.sigma, self.n_samples,
             noise_fn=self.noise_fn, conf_floor=self.conf_floor,
             quorum=self.quorum, conf_threshold=confidence_threshold,
-            generator=self._generator_for(image_path),
+            generator=self._generator_for(image_path), device=self.device,
         )
 
     def __call__(
