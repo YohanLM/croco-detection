@@ -37,6 +37,21 @@ from conformal.seqcrc import (
     build_survivor_split,
     effective_threshold,
 )
+from conformal.smoothing import (
+    CertifiedPrediction,
+    SmoothedTop1Predictor,
+    SmoothingSamples,
+    certified_detection_radius,
+    certified_iou_lower_bound,
+    certified_radius_px,
+    certify_samples,
+    collect_samples,
+    coordinate_certificate,
+    gaussian_noise,
+    max_certified_radius,
+    pgd_l2,
+    sweep,
+)
 
 __all__ = [
     # framework
@@ -72,6 +87,20 @@ __all__ = [
     "SeqCRCInferencer",
     "build_survivor_split",
     "effective_threshold",
+    # smoothing
+    "SmoothedTop1Predictor",
+    "SmoothingSamples",
+    "collect_samples",
+    "gaussian_noise",
+    "coordinate_certificate",
+    "certified_iou_lower_bound",
+    "max_certified_radius",
+    "certified_detection_radius",
+    "certified_radius_px",
+    "CertifiedPrediction",
+    "certify_samples",
+    "sweep",
+    "pgd_l2",
     # data
     "CalibrationDataset",
     "PredictionDataset",

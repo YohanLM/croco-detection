@@ -42,6 +42,26 @@ class YoloPredictor:
         results = self.model(image_paths, conf=confidence_threshold, verbose=False)
         return [self._result_to_tensor(r) for r in results]
 
+    def predict_arrays(
+        self, images: torch.Tensor, confidence_threshold: float
+    ) -> list[torch.Tensor]:
+        """Run the detector on a batch of **in-memory** images, not paths.
+
+        `images` is a `[B, 3, H, W]` float tensor with values already
+        normalized to `[0, 1]` in **RGB** channel order. Ultralytics' tensor
+        source path treats such input as pre-normalized RGB, which sidesteps
+        the BGR convention it applies to numpy arrays — so the same pixels a
+        caller perturbed in-place are exactly what the model sees.
+
+        This is the hook median smoothing needs: noise is injected at the
+        pixel-tensor level (see `conformal.smoothing`), so the base detector
+        must accept tensors, not just file paths. Output matches `__call__` /
+        `predict_batch`: one `[P, 5]` pixel-xyxy + score tensor per image,
+        filtered at `confidence_threshold`.
+        """
+        results = self.model(images, conf=confidence_threshold, verbose=False)
+        return [self._result_to_tensor(r) for r in results]
+
     @staticmethod
     def _result_to_tensor(result) -> torch.Tensor:
         boxes = result.boxes

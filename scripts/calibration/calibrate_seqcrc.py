@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 # Make `import conformal` and `import crc_common` resolve regardless of CWD.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from conformal.calibrator import Calibrator
