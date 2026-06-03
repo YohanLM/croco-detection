@@ -48,7 +48,14 @@ class TopKPredictor:
     def __call__(
         self, image_path: str, confidence_threshold: float
     ) -> torch.Tensor:
-        preds = self.base(image_path, confidence_threshold)
+        return self._topk(self.base(image_path, confidence_threshold))
+
+    def predict_batch(
+        self, image_paths: list[str], confidence_threshold: float
+    ) -> list[torch.Tensor]:
+        return [self._topk(p) for p in self.base.predict_batch(image_paths, confidence_threshold)]
+
+    def _topk(self, preds: torch.Tensor) -> torch.Tensor:
         if preds.numel() == 0 or preds.shape[0] <= self.k:
             return preds
         top_idx = torch.topk(preds[:, 4], self.k).indices

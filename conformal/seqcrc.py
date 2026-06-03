@@ -77,13 +77,26 @@ def build_survivor_split(
     dataset = CalibrationDataset(split_file)
     survivors: list[str] = []
     n_total = len(dataset)
-    for i in range(n_total):
-        path, gt = dataset[i]
-        if gt.numel() == 0:
-            continue
-        preds = predictor(path, t_eff)
-        if detection_loss_fn(preds, gt) == 0.0:
-            survivors.append(path)
+    use_batch = hasattr(predictor, "predict_batch")
+
+    # Collect only frames that have GT (frames without GT are skipped regardless).
+    frames: list[tuple[str, torch.Tensor]] = [
+        (dataset[i][0], dataset[i][1])
+        for i in range(n_total)
+        if dataset[i][1].numel() > 0
+    ]
+
+    batch_size = 16
+    for start in range(0, len(frames), batch_size):
+        batch = frames[start : start + batch_size]
+        paths = [p for p, _ in batch]
+        if use_batch:
+            batch_preds = predictor.predict_batch(paths, t_eff)
+        else:
+            batch_preds = [predictor(p, t_eff) for p in paths]
+        for preds, (path, gt) in zip(batch_preds, batch):
+            if detection_loss_fn(preds, gt) == 0.0:
+                survivors.append(path)
 
     out_path = Path(out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)

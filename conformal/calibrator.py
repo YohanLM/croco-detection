@@ -404,18 +404,27 @@ class Calibrator:
     def _collect(
         self, loader: DataLoader
     ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Run `_predict_raw` once over the loader; return paired lists.
+        """Run the predictor once over the loader; return paired lists.
 
-        Predictions are cached across the λ sweep — only `_apply_expansion`
-        is re-applied per candidate, so calibration cost stays at N model
-        calls regardless of how many λ values Brent's method probes.
+        Uses `predict_batch` when available (one GPU call per DataLoader batch)
+        and falls back to per-image `_predict_raw` otherwise. Either way the
+        result is the same flat lists — everything downstream is unaffected.
+        Predictions are cached across the λ sweep so calibration cost stays at
+        N model calls regardless of how many λ values Brent's method probes.
         """
+        use_batch = hasattr(self.prediction_fn, "predict_batch")
         preds: list[torch.Tensor] = []
         gts: list[torch.Tensor] = []
         for paths, gt_batch in loader:
-            for path, gt in zip(paths, gt_batch):
-                preds.append(self._predict_raw(path))
-                gts.append(gt)
+            if use_batch:
+                batch_preds = self.prediction_fn.predict_batch(
+                    paths, self.confidence_threshold
+                )
+                preds.extend(batch_preds)
+            else:
+                for path in paths:
+                    preds.append(self._predict_raw(path))
+            gts.extend(gt_batch)
         return preds, gts
 
     def calibrate(

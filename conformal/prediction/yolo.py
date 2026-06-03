@@ -34,6 +34,16 @@ class YoloPredictor:
         self, image_path: str, confidence_threshold: float
     ) -> torch.Tensor:
         result = self.model(image_path, conf=confidence_threshold, verbose=False)[0]
+        return self._result_to_tensor(result)
+
+    def predict_batch(
+        self, image_paths: list[str], confidence_threshold: float
+    ) -> list[torch.Tensor]:
+        results = self.model(image_paths, conf=confidence_threshold, verbose=False)
+        return [self._result_to_tensor(r) for r in results]
+
+    @staticmethod
+    def _result_to_tensor(result) -> torch.Tensor:
         boxes = result.boxes
         if boxes is None or len(boxes) == 0:
             return torch.zeros((0, 5), dtype=torch.float32)
