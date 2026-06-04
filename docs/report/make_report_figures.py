@@ -76,14 +76,17 @@ def _f(pattern: str, text: str, group: int = 1) -> float | None:
     return float(m.group(group).replace(",", "")) if m else None
 
 
-def parse_run(name: str, label: str) -> Run | None:
-    """Parse `outputs/<name>/results.txt` into a Run, or None if absent."""
-    path = OUTPUTS / name / "results.txt"
+def parse_run(subpath: str, label: str) -> Run | None:
+    """Parse `outputs/<subpath>/results.txt` into a Run, or None if absent.
+
+    `subpath` includes the subdirectory, e.g. "crc/crc_09" or "seqcrc/seqcrc_09".
+    """
+    path = OUTPUTS / subpath / "results.txt"
     if not path.exists():
         print(f"  [skip] {path} not found")
         return None
     t = path.read_text(encoding="utf-8", errors="replace")
-    run = Run(name=name, label=label)
+    run = Run(name=subpath, label=label)
 
     run.alpha = _f(r"alpha \([^)]*\)\s*[:=]?\s*([\d.]+)", t)
     run.lam_hat = _f(r"lambda-hat \(calibrated margin\)\s*=\s*([\d.]+)", t)
@@ -139,11 +142,6 @@ def _save(fig, name: str) -> None:
 # ── Figure 1 — pixel-wise loss vs 75% coverage-indicator loss ─────────────────
 
 def fig_loss_comparison(pixel: Run, coverage: Run) -> None:
-    """Same expansion (multiplicative), two losses: cost of each definition.
-
-    Both certify the same alpha; the question is how much margin (lambda-hat)
-    and how much box inflation each loss demands.
-    """
     metrics = ["lambda-hat", "test risk", "inflation (x)"]
     pvals = [pixel.lam_hat, pixel.test_risk, pixel.inflation]
     cvals = [coverage.lam_hat, coverage.test_risk, coverage.inflation]
@@ -170,7 +168,6 @@ def fig_loss_comparison(pixel: Run, coverage: Run) -> None:
 # ── Figure 2 — expansion geometry: multiplicative vs asymmetric vs additive ───
 
 def fig_expansion_efficiency(runs: list[Run]) -> None:
-    """All reach the same risk; compare the box-area cost (efficiency)."""
     labels = [r.label for r in runs]
     inflation = [r.inflation for r in runs]
     area = [r.mean_area for r in runs]
@@ -201,11 +198,6 @@ def fig_expansion_efficiency(runs: list[Run]) -> None:
 # ── Figure 3 — overlaid risk curves for the geometric expansions ──────────────
 
 def fig_expansion_riskcurves(mult: Run, asym: Run, add: Run) -> None:
-    """R(lambda) for each geometric expansion.
-
-    Multiplicative and asymmetric share a dimensionless lambda axis (fraction of
-    box side); additive lambda is in pixels, so it gets its own panel.
-    """
     fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 4.5))
     for run, color in ((mult, PALETTE[0]), (asym, PALETTE[2])):
         if run and run.risk_curve:
@@ -243,11 +235,6 @@ def fig_expansion_riskcurves(mult: Run, asym: Run, add: Run) -> None:
 # ── Figure 4 — confidence-wise vs box-size expansion ──────────────────────────
 
 def fig_confidence_vs_geometric(conf: Run, geom: Run) -> None:
-    """Two ways to spend lambda: admit more boxes vs grow existing boxes.
-
-    Both certify the same coverage alpha; they attack different failure modes,
-    so we compare what each does to the fully-missed fraction.
-    """
     cats = ["raw frac missed", "frac missed\n(calibrated)", "frac covered"]
     conf_vals = [conf.raw_frac_missed, conf.frac_missed, conf.frac_covered]
     geom_vals = [geom.raw_frac_missed, geom.frac_missed, geom.frac_covered]
@@ -273,10 +260,6 @@ def fig_confidence_vs_geometric(conf: Run, geom: Run) -> None:
 # ── Figure 5 — SeqCRC alpha-allocation sweep ──────────────────────────────────
 
 def fig_seqcrc_allocation(runs: list[Run]) -> None:
-    """How the union-bound split (alpha_cnf vs alpha_loc) moves each knob.
-
-    x-axis = fraction of the global budget given to Phase 1 (confidence).
-    """
     runs = [r for r in runs if r and r.alpha_cnf is not None]
     runs.sort(key=lambda r: r.alpha_cnf)
     frac = [r.alpha_cnf / (r.alpha_cnf + r.alpha_loc) for r in runs]
@@ -310,7 +293,6 @@ def fig_seqcrc_allocation(runs: list[Run]) -> None:
 # ── Figure 6 — master summary across every method ─────────────────────────────
 
 def fig_master_summary(runs: list[Run]) -> None:
-    """Validity (risk <= alpha) and efficiency (inflation) for all methods."""
     runs = [r for r in runs if r and r.test_risk is not None]
     labels = [r.label for r in runs]
     risks = [r.test_risk for r in runs]
@@ -333,7 +315,6 @@ def fig_master_summary(runs: list[Run]) -> None:
     axL.grid(alpha=0.3, axis="y")
     axL.legend(fontsize=8)
 
-    # Efficiency scatter: inflation vs risk (only runs that report inflation).
     eff = [r for r in runs if r.inflation is not None]
     for i, r in enumerate(eff):
         axR.scatter(r.inflation, r.test_risk, s=90, color=PALETTE[i % len(PALETTE)],
@@ -349,27 +330,120 @@ def fig_master_summary(runs: list[Run]) -> None:
     _save(fig, "fig_master_summary.png")
 
 
+# ── Figure 7 — raw YOLO vs SeqCRC image-level TP/FP/FN/TN ────────────────────
+
+def _parse_classification_result(path: Path) -> dict | None:
+    """Parse an eval_test_split / eval_seqcrc_test result file."""
+    if not path.exists():
+        print(f"  [skip] {path} not found")
+        return None
+    t = path.read_text(encoding="utf-8", errors="replace")
+
+    def _i(pattern):
+        m = re.search(pattern, t)
+        return int(m.group(1)) if m else None
+
+    def _ff(pattern):
+        m = re.search(pattern, t)
+        return float(m.group(1)) if m else None
+
+    return {
+        "n_pos":      _i(r"Positive images.*?:\s*(\d+)"),
+        "n_neg":      _i(r"Negative images.*?:\s*(\d+)"),
+        "tp":         _i(r"TP.*?:\s*(\d+)\s*/"),
+        "fn":         _i(r"FN.*?:\s*(\d+)\s*/"),
+        "fp":         _i(r"FP.*?:\s*(\d+)\s*/"),
+        "tn":         _i(r"TN.*?:\s*(\d+)\s*/"),
+        "precision":  _ff(r"precision\s*:\s*([\d.]+)"),
+        "recall":     _ff(r"recall\s*:\s*([\d.]+)"),
+        "f1":         _ff(r"F1\s*:\s*([\d.]+)"),
+        "mean_cov_all": _ff(r"Mean GT coverage \(all pos\)\s*:\s*([\d.]+)"),
+    }
+
+
+def fig_raw_vs_seqcrc() -> None:
+    """Image-level classification: raw YOLO vs calibrated SeqCRC pipeline.
+
+    Uses the 75%-coverage criterion (matching the Phase-2 loss) so that the
+    improvement from box expansion is directly visible.
+    Source files: outputs/raw_vs_seqcrc/{raw_model,seqcrc_augm}/results_iou75
+    """
+    raw  = _parse_classification_result(OUTPUTS / "raw_vs_seqcrc" / "raw_model"  / "results_iou75")
+    seq  = _parse_classification_result(OUTPUTS / "raw_vs_seqcrc" / "seqcrc_augm" / "results_iou75")
+    if not raw or not seq:
+        return
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Left: TP / FN / FP / TN counts
+    cats   = ["TP", "FN", "FP", "TN"]
+    colors = ["#2ca02c", "#d62728", "#ff7f0e", "#9ecae1"]
+    raw_v  = [raw["tp"],  raw["fn"],  raw["fp"],  raw["tn"]]
+    seq_v  = [seq["tp"],  seq["fn"],  seq["fp"],  seq["tn"]]
+    x = range(len(cats))
+    w = 0.38
+    b1 = axL.bar([i - w / 2 for i in x], raw_v, w, label="Raw YOLO  (T=0.30)",
+                 color=[c + "99" for c in colors])
+    b2 = axL.bar([i + w / 2 for i in x], seq_v, w,
+                 label=r"SeqCRC  ($T_\mathrm{eff}$=0.099, +0.44 px)",
+                 color=colors)
+    axL.bar_label(b1, fontsize=8)
+    axL.bar_label(b2, fontsize=8)
+    axL.set_xticks(list(x))
+    axL.set_xticklabels(cats, fontsize=11)
+    axL.set_ylabel("number of test images")
+    axL.set_title("Image-level outcomes  (75%-coverage criterion)\n"
+                  f"235 positive + 565 negative = 800 total")
+    axL.legend(fontsize=8)
+    axL.grid(alpha=0.3, axis="y")
+
+    # Right: recall, precision, F1, mean GT coverage
+    metrics = ["Recall", "Precision", "F1", "Mean GT\ncoverage (pos)"]
+    raw_m   = [raw["recall"], raw["precision"], raw["f1"], raw["mean_cov_all"]]
+    seq_m   = [seq["recall"], seq["precision"], seq["f1"], seq["mean_cov_all"]]
+    x2 = range(len(metrics))
+    b3 = axR.bar([i - w / 2 for i in x2], raw_m, w,
+                 label="Raw YOLO  (T=0.30)", color=C_RAW)
+    b4 = axR.bar([i + w / 2 for i in x2], seq_m, w,
+                 label=r"SeqCRC  ($T_\mathrm{eff}$=0.099, +0.44 px)", color=C_CAL)
+    axR.bar_label(b3, fmt="%.3f", fontsize=8)
+    axR.bar_label(b4, fmt="%.3f", fontsize=8)
+    axR.set_xticks(list(x2))
+    axR.set_xticklabels(metrics, fontsize=9)
+    axR.set_ylim(0, 1.12)
+    axR.set_ylabel("value")
+    axR.set_title("Image-level metrics  (75%-coverage criterion)")
+    axR.legend(fontsize=8)
+    axR.grid(alpha=0.3, axis="y")
+
+    fig.suptitle(r"Raw YOLO vs.\ calibrated SeqCRC pipeline on the 800-image test split",
+                 fontsize=12)
+    _save(fig, "fig_raw_vs_seqcrc.png")
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     print(f"Reading runs from {OUTPUTS}")
 
-    # Single-knob CRC runs (all alpha = 0.09).
-    pixel_mult = parse_run("crc_09", "Pixel . multiplicative")
-    cov_mult = parse_run("crc_cov_09", "Coverage . multiplicative")
-    cov_asym = parse_run("crc_asym_cov_09_06", "Coverage . asymmetric")
-    cov_add = parse_run("crc_add_cov_09", "Coverage . additive")
-    cov_conf = parse_run("crc_conf_09", "Coverage . confidence")
+    # Single-knob CRC runs — note the crc/ subdirectory prefix.
+    pixel_mult = parse_run("crc/crc_09",             "Pixel . multiplicative")
+    cov_mult   = parse_run("crc/crc_cov_09",         "Coverage . multiplicative")
+    cov_asym   = parse_run("crc/crc_asym_cov_09_06", "Coverage . asymmetric")
+    cov_add    = parse_run("crc/crc_add_cov_09",     "Coverage . additive")
+    cov_conf   = parse_run("crc/crc_conf_09",        "Coverage . confidence")
 
-    # SeqCRC runs (alpha = 0.09, different union-bound splits).
+    # SeqCRC runs — note the seqcrc/ subdirectory prefix.
     seq = [
-        parse_run("seqcrc_09", "50/50"),
-        parse_run("seqcrc_09_top1", "50/50 (top-1)"),
-        parse_run("seqcrc_09_top1_2", "75/25 (top-1)"),
-        parse_run("seqcrc_09_top1_3", "35/65 (top-1)"),
+        parse_run("seqcrc/seqcrc_09",         "50/50"),
+        parse_run("seqcrc/seqcrc_09_top1",    "50/50 (top-1)"),
+        parse_run("seqcrc/seqcrc_09_top1_2",  "75/25 (top-1)"),
+        parse_run("seqcrc/seqcrc_09_top1_3",  "35/65 (top-1)"),
     ]
-    seq_main = next(r for r in seq if r and r.name == "seqcrc_09")
-    seq_main.label = "SeqCRC (two-phase)"
+    seq_main = next((r for r in seq if r and "seqcrc_09" in r.name
+                     and "top1" not in r.name), None)
+    if seq_main:
+        seq_main.label = "SeqCRC (two-phase)"
 
     print("Building figures:")
     if pixel_mult and cov_mult:
@@ -384,6 +458,9 @@ def main() -> None:
 
     summary_runs = [pixel_mult, cov_mult, cov_asym, cov_add, cov_conf, seq_main]
     fig_master_summary([r for r in summary_runs if r])
+
+    fig_raw_vs_seqcrc()
+
     print("Done.")
 
 

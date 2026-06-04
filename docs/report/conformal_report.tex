@@ -19,7 +19,7 @@
 
 % Look for figures both in ./figures (generated comparisons) and in the
 % per-experiment output folders (the runs' own diagnostic PNGs).
-\graphicspath{{figures/}{../../outputs/}}
+\graphicspath{{figures/}}
 
 \newcommand{\lamhat}{\hat{\lambda}}
 \newcommand{\code}[1]{\texttt{\small #1}}
@@ -106,11 +106,13 @@ and then, for each candidate $\lambda$ probed by Brent's method, re-applies
 \emph{only} the expansion (so cost stays at $N$ model calls). It returns
 \begin{equation}
   \lamhat \;=\; \inf\Bigl\{\lambda :
-   \underbrace{\tfrac{n}{n+1}\hat{R}_n(\lambda) + \tfrac{1}{n+1}}_{\text{finite-sample correction } \tilde R(\lambda)}
+   \underbrace{\tfrac{n}{n+1}\hat{R}_n(\lambda) + \tfrac{B}{n+1}}_{\text{finite-sample correction } \tilde R(\lambda)}
    \;\le\; \alpha \Bigr\}.
   \label{eq:crc-rule}
 \end{equation}
-The $+\tfrac{1}{n+1}$ term protects against one extra worst-case test sample and
+$B = \sup L_i$ is the loss upper bound, carried by \code{Risk.loss\_upper\_bound}
+(all losses in this report have $B=1$, so the correction reduces to $\tfrac{1}{n+1}$).
+The $+\tfrac{B}{n+1}$ term accounts for one extra worst-case test sample and
 vanishes as $n\to\infty$. A guard handles the step-function nature of the
 discrete loss (nudging $\lamhat$ past a step where Brent lands on the wrong
 side), and an explicit error is raised when images with zero surviving
@@ -188,11 +190,31 @@ not lower risk.
 \subsection{Dataset and experimental protocol}
 
 The calibration and test sets each comprise $n{=}800$ labeled frames drawn from
-the croco-clip orthophoto dataset. Both splits are entirely disjoint from the
-images used to train the YOLO detector and from each other; using training images
-in calibration would invalidate the exchangeability assumption on which the CRC
-guarantee rests. The three partitions (train / calibration / test) were fixed
-before any conformal experiment was run and are never re-randomised between runs.
+the croco-clip orthophoto dataset. The splits satisfy the following disjointness
+conditions, which we verified explicitly with \code{scripts/evaluation/check\_disjointness.py}:
+
+\begin{itemize}[nosep]
+  \item The \textbf{calibration split} is entirely disjoint from the training set,
+    the training validation set, and the test split. It is the only fully clean
+    partition: $\lamhat$ calibrated on it is valid for deployment on data from the
+    same distribution.
+  \item The \textbf{test split} is disjoint from the training set but \emph{coincides
+    with the training validation split} --- the $800$ images on which
+    \code{best.pt} was selected by early stopping. The model did not train on
+    these images, but its weights were \emph{chosen} for good performance on them.
+\end{itemize}
+
+\noindent\textbf{Implication.} Because $\lamhat$ is calibrated on the clean
+calibration split, the CRC guarantee $\mathbb{E}[L(\lamhat)]\le\alpha$ is
+mathematically valid for deployment on new, truly unseen data. However, the
+\emph{reported} test metrics (raw risk, calibrated risk, fully-missed counts) are
+slightly optimistic: \code{best.pt} was selected for good performance on those
+exact images, so their empirical loss sits somewhat below what one would observe
+on a fully independent sample. The bias affects the baseline (raw risk) and
+the test risk equally, so the relative improvement from CRC is unaffected; only
+the absolute reported values should be read with this caveat in mind. Generating
+a fully clean test split via \code{scripts/evaluation/generate\_clean\_splits.py}
+and re-running all experiments is noted as a priority in \S\ref{sec:summary}.
 
 Each frame may contain zero or one ground-truth croco clip: the splits are
 \emph{not} filtered to positive-only images, preserving the distribution of
@@ -269,43 +291,81 @@ $n=800$.
 \subsection{YOLO base detector performance}
 \label{sec:yolo-baseline}
 % ---------------------------------------------------------------------
-Before examining conformal experiments it is useful to characterise the base
-YOLO model independently, using standard object-detection metrics on the same
-$800$-image test split at $T = 0.30$. These metrics describe box-level detection
-quality under the conventional IoU criterion and complement the CRC risk, which
-is an image-level coverage metric.
+
+\paragraph{Dataset composition.}
+The 800-image test split contains \textbf{235 positive frames} (at least one
+croco clip present) and \textbf{565 negative frames} (background only). The
+splits are not filtered to positive-only images; the 29\% positive rate
+reflects the deployment setting where background frames are the majority.
+
+\paragraph{Box-level metrics (training validation split).}
+Table~\ref{tab:yolo-box} reports the standard Ultralytics \code{val} metrics
+produced during training. These are evaluated on the \emph{training validation
+split} — the same $800$ images used to select \code{best.pt} by early stopping,
+which as noted in \S4.1 coincides with the CRC test split. The numbers are
+therefore optimistic by the model-selection bias described there.
 
 \begin{table}[h]\centering
-\caption{YOLO base detector metrics at $T{=}0.30$, \code{imgsz=640}.
-\textsuperscript{$\dagger$} Epoch-22 (best-checkpoint) metrics on the
-\emph{training} validation split — the same split used by \texttt{yolo} to
-select \texttt{best.pt}. \textsuperscript{$\ddagger$} To be filled by running
-\texttt{yolo val} on the CRC test split (\texttt{data/splits/test.txt}) so the
-numbers are directly comparable to the raw-risk figures in \S5.2--5.4.}
+\caption{YOLO11n box-level detection metrics at $T{=}0.30$, \code{imgsz=640},
+IoU threshold $0.50$ (Ultralytics default). Evaluated on the training val split
+(epoch~22, best checkpoint). Due to the model-selection overlap with the CRC test
+split (\S4.1), these numbers are slightly optimistic.}
+\label{tab:yolo-box}
 \begin{tabular}{lcccc}
 \toprule
-Evaluation set & Precision & Recall & mAP@.50 & mAP@.50:.95 \\
+Class & Precision & Recall & mAP@.50 & mAP@.50:.95 \\
 \midrule
-Training val split\textsuperscript{$\dagger$} & 0.714 & 0.733 & 0.777 & 0.273 \\
-CRC test split\textsuperscript{$\ddagger$}    & ---   & ---   & ---   & ---   \\
+croco clip & 0.714 & 0.733 & 0.777 & 0.273 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\noindent\textbf{Disjointness check (to verify on the GPU machine).} The CRC
-guarantee requires that the calibration and test splits are entirely disjoint
-from the training data. Because \texttt{best.pt} is chosen by its performance
-on the training val split, that split must also be excluded from both the CRC
-calibration and CRC test sets. Before reporting the CRC-test-split column above,
-confirm that no filename in \texttt{data/splits/\{calibration,test\}.txt}
-appears in either the train or val lists of \texttt{dataset\_800.yaml}.
+\paragraph{Image-level classification metrics (CRC test split).}
+Table~\ref{tab:yolo-image} reports image-level TP/FP/FN/TN counts under two
+criteria: (a) IoU~$\ge 0.10$ with the GT box (lenient detection criterion),
+and (b) $\ge 75\%$ pixel coverage of the GT box (the same criterion Phase~2 of
+SeqCRC optimises). The coverage criterion is stricter: a box that touches the
+clip but covers less than $75\%$ of its area counts as FN. The two criteria
+therefore decompose the failure modes — missed detections vs.\ poor localisation.
+Results for the calibrated SeqCRC pipeline are included for direct comparison.
 
-The raw risks already in \S\ref{sec:yolo-baseline}--\S\ref{sec:seqcrc} give an
-image-level proxy for recall on the CRC test split: a raw risk of $0.1175$ under
-the 75\%-coverage loss means $11.75\%$ of CRC-test frames lack adequate GT
-coverage at $\lambda{=}0$, which upper-bounds the frame-level miss rate at
-$T{=}0.30$. The standard mAP/precision/recall from \code{yolo val} will complete
-the picture with box-level IoU-based metrics.
+\begin{table}[h]\centering
+\caption{Image-level classification on the 800-image test split (235 positive,
+565 negative). IoU criterion: any predicted box overlaps GT at IoU~$\ge 0.10$.
+Coverage criterion: the union of predicted boxes covers $\ge 75\%$ of the GT
+pixel area (identical to the Phase-2 CRC loss). SeqCRC uses
+$T_{\text{eff}}{=}0.099$ and $\lambda_{\text{loc}}{=}0.44$\,px.}
+\label{tab:yolo-image}
+\begin{tabular}{llccccccc}
+\toprule
+Criterion & Pipeline & TP & FN & FP & TN & Precision & Recall & F1 \\
+\midrule
+\multirow{2}{*}{IoU $\ge 0.10$}
+  & Raw YOLO ($T{=}0.30$) & 173 & 62 &  0 & 565 & 1.000 & 0.736 & 0.848 \\
+  & SeqCRC (calibrated)   & 220 & 15 &  2 & 563 & 0.991 & 0.936 & 0.963 \\
+\midrule
+\multirow{2}{*}{Coverage $\ge 75\%$}
+  & Raw YOLO ($T{=}0.30$) & 141 & 94 &  0 & 565 & 1.000 & 0.600 & 0.750 \\
+  & SeqCRC (calibrated)   & 204 & 31 &  2 & 563 & 0.990 & 0.868 & 0.925 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Under the coverage criterion, the FN gap (94 $\to$ 31) is larger than under IoU
+(62 $\to$ 15) because SeqCRC's Phase~2 expansion directly increases coverage
+ratios: the 32 raw-YOLO frames where a box fired but covered less than $75\%$
+of the clip are mostly recovered by the $+0.44$\,px additive margin.
+Mean GT coverage on positive images rises from $0.644$ (raw YOLO) to $0.870$
+(SeqCRC), confirming that the expansion closes genuine localisation slack rather
+than merely growing boxes arbitrarily.
+
+\begin{figure}[h]\centering
+  \includegraphics[width=0.98\textwidth]{fig_raw_vs_seqcrc.png}
+  \caption{Raw YOLO vs.\ calibrated SeqCRC on the 800-image test split
+  (75\%-coverage criterion). Left: image counts per outcome category.
+  Right: recall, precision, F1, and mean GT coverage for positive images.
+  SeqCRC recovers $94-31=63$ additional clips at the cost of 2 false alarms.}
+\end{figure}
 
 % ---------------------------------------------------------------------
 \subsection{Loss definition: pixel-wise recall vs.\ 75\% coverage-indicator}
@@ -529,6 +589,12 @@ $\lamhat$ and the irreducible-miss floor. Priorities:
 
 \subsection{Robustness and validity of the guarantee}
 \begin{itemize}[nosep]
+  \item \textbf{Clean evaluation split (immediate priority).} As documented in
+    \S4.1, the current test split coincides with the YOLO training validation split.
+    Run \code{scripts/evaluation/generate\_clean\_splits.py} to re-shuffle the
+    combined 1\,600-image pool into a fresh 800/800 partition, then re-run all CRC
+    experiments. The calibrated $\lamhat$ is already valid; only the reported test
+    metrics need refreshing.
   \item \textbf{Exchangeability / distribution shift.} The guarantee assumes
     calibration and deployment are exchangeable. Real orthophotos differ by
     track, season, sensor. We need a shift study (calibrate on one
