@@ -48,7 +48,7 @@ load_dotenv()
 # ── Shared training constants ─────────────────────────────────────────────────
 EPOCHS     = 25
 IMGSZ      = 640
-DEVICE     = "mps"       # Apple Silicon GPU; use "cpu" or "0" (CUDA) on other machines
+DEVICE     = "cuda"       # Apple Silicon GPU; use "cpu" or "0" (CUDA) on other machines
 SEED       = 42
 WEIGHTS    = "models/yolo11n.pt"
 TEST_RATIO = 0.2
