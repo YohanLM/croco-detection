@@ -1,4 +1,10 @@
-"""DataLoaders for Conformal Risk Control.
+"""Ground-truth data loading for Conformal Risk Control.
+
+This module is the GT side of the pipeline only.  It reads image paths and
+their corresponding YOLO-format label files; it knows nothing about model
+predictions or confidence scores.  Predictions (with confidence in column 4)
+come from `conformal/prediction/yolo.py`.  The two meet inside the loss and
+expansion functions, which expect `[P, 5]` predictions and `[G, 4]` GT boxes.
 
 Two datasets, mirroring the two stages of the pipeline:
 

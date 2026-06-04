@@ -58,10 +58,10 @@ from crc_common import _Tee, check_paths, count_lines, rule
 # ── CONFIG ───────────────────────────────────────────────────────────────────
 WEIGHTS = ROOT / "models" / "best.pt"
 TEST_SPLIT = ROOT / "data" / "splits" / "test.txt"
-OUT_DIR = ROOT / "outputs" / "smoothing_attack"
 
 ATTACK_SIZE = 640            # square size images are resized to (divisible by 32)
-EPSILON = 3.0                # total-l2 perturbation budget over the whole image
+EPSILON = 0.10               # total-l2 perturbation budget (keep <= cert radius ~0.134)
+OUT_DIR = ROOT / "outputs" / f"smoothing_attack_eps{EPSILON}"
 PGD_STEPS = 10
 
 SIGMA = 0.08                 # smoothing noise scale
@@ -232,10 +232,8 @@ def _save_overlays(worst) -> list[Path]:
         axL.imshow(clean_np); axR.imshow(adv_np)
         for ax in (axL, axR):
             ax.axis("off")
-        _draw(axL, gt_r, "lime"); _draw(axL, sc_box, "orange")
-        _draw(axR, gt_r, "lime"); _draw(axR, sa_box, "orange", ls="-")
-        axL.set_title("clean (smoothed box orange, GT green)", fontsize=10)
-        axR.set_title("adversarial (smoothed box orange, GT green)", fontsize=10)
+        axL.set_title("clean", fontsize=10)
+        axR.set_title("adversarial", fontsize=10)
         fig.suptitle(f"worst raw-attacked #{rank}", fontsize=10)
         fig.tight_layout()
         out = OUT_DIR / f"attack_{rank:02d}.png"

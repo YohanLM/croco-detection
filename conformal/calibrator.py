@@ -4,7 +4,7 @@ Defines the pluggable components every CRC pipeline needs — prediction,
 expansion, per-image loss, and the set-level risk wrapper — plus the
 `Calibrator` class that composes them into the finite-sample CRC procedure:
 
-    λ̂ = inf { λ : (n / (n+1)) · R̂_n(λ) + 1/(n+1) ≤ α }
+    λ̂ = inf { λ : (n / (n+1)) · R̂_n(λ) + B/(n+1) ≤ α }
 
 The loss vs. risk split is deliberate: the user defines the per-image
 **LossFunction** (what failure means on one image); the set-level
@@ -110,10 +110,17 @@ class Risk:
 
     `R̂_n = (1/n) Σ_i L_i`. Constructing a new risk is just wrapping a
     different per-image loss — `Risk(other_loss)`.
+
+    `loss_upper_bound` is the supremum B of the per-image loss (the maximum
+    value `loss_fn` can return).  It enters the CRC finite-sample correction
+    as the B/(n+1) term — see `crc_finite_sample_correction`.  All current
+    losses are bounded in [0, 1], so B=1.0 is the correct default.  Pass an
+    explicit value when wrapping a loss with a different range.
     """
 
-    def __init__(self, loss_fn: LossFunction) -> None:
+    def __init__(self, loss_fn: LossFunction, loss_upper_bound: float = 1.0) -> None:
         self.loss_fn = loss_fn
+        self.loss_upper_bound = loss_upper_bound
 
     def __call__(
         self,
@@ -443,10 +450,12 @@ class Calibrator:
         if n == 0:
             raise RuntimeError("Calibration set is empty.")
 
+        b = self.risk_fn.loss_upper_bound
+
         def crc_gap(lam: float) -> float:
             expanded = [self._apply_expansion(p, lam) for p in preds]
             empirical_risk = self.risk_fn(expanded, gts)
-            return crc_finite_sample_correction(empirical_risk, n) - self.alpha
+            return crc_finite_sample_correction(empirical_risk, n, b) - self.alpha
 
         lo, hi = lambda_range
         if crc_gap(lo) <= 0:
@@ -560,7 +569,7 @@ class Calibrator:
             n=n,
             per_image_losses=per_image_losses,
             risk=risk,
-            crc_bound=crc_finite_sample_correction(risk, n),
+            crc_bound=crc_finite_sample_correction(risk, n, self.risk_fn.loss_upper_bound),
             per_image_efficiency=per_image_eff,
             mean_efficiency=mean_eff,
             mean_raw_efficiency=mean_raw_eff,
@@ -571,19 +580,22 @@ class Calibrator:
 
 # ── CRC finite-sample correction ─────────────────────────────────────────────
 
-def crc_finite_sample_correction(empirical_risk: float, n: int) -> float:
+def crc_finite_sample_correction(empirical_risk: float, n: int, b: float = 1.0) -> float:
     """Inflate an empirical risk into a CRC-valid finite-sample upper bound.
 
-    For `n` iid calibration samples and empirical risk `R̂_n`:
+    For `n` iid calibration samples, empirical risk `R̂_n`, and loss upper
+    bound `B = sup L_i`:
 
-        R̃ = (n / (n+1)) · R̂_n + 1/(n+1)
+        R̃ = (n / (n+1)) · R̂_n + B/(n+1)
 
-    The CRC infimum rule (methodology Eq. 5) then selects
+    The CRC infimum rule (Angelopoulos et al. 2022, Thm 1) then selects
         λ̂ = inf { λ : R̃(λ) ≤ α }
     which gives the exchangeability-only guarantee `E[L(λ̂)] ≤ α`.
 
-    As `n → ∞`, `R̃ → R̂_n` — the correction vanishes. For small `n` it
-    matters: the `+ 1/(n+1)` term ensures the bound holds even when one
-    extra worst-case sample could appear at test time.
+    The `B/(n+1)` term accounts for one extra worst-case test sample that
+    contributes at most `B` to the empirical mean — it vanishes as `n → ∞`.
+    `B` is the supremum of the loss, carried by `Risk.loss_upper_bound`.
+    All losses in this codebase are bounded in [0, 1], so `b=1.0` is the
+    correct default, but passing it explicitly ties the formula to the loss.
     """
-    return n / (n + 1) * empirical_risk + 1.0 / (n + 1)
+    return n / (n + 1) * empirical_risk + b / (n + 1)

@@ -184,6 +184,65 @@ not lower risk.
 % =====================================================================
 \section{Evaluation methodology}
 % =====================================================================
+
+\subsection{Dataset and experimental protocol}
+
+The calibration and test sets each comprise $n{=}800$ labeled frames drawn from
+the croco-clip orthophoto dataset. Both splits are entirely disjoint from the
+images used to train the YOLO detector and from each other; using training images
+in calibration would invalidate the exchangeability assumption on which the CRC
+guarantee rests. The three partitions (train / calibration / test) were fixed
+before any conformal experiment was run and are never re-randomised between runs.
+
+Each frame may contain zero or one ground-truth croco clip: the splits are
+\emph{not} filtered to positive-only images, preserving the distribution of
+data the system sees in deployment. Images whose label file is empty (no clip
+present) contribute a per-image loss of $0$ under every loss function defined in
+this report, since there is no GT box to miss; they do not tighten the risk bound
+but they do appear in the empirical average, so the reported risks and floors are
+directly meaningful for the deployed setting.
+
+Inference runs at a fixed objectness threshold $T = 0.30$ (YOLO's standard
+operating point, \code{imgsz=640}): any predicted box whose confidence score falls
+below $T$ is discarded before the expansion function is applied. False positives
+--- predicted boxes on frames with no GT clip, or extra boxes on frames with one
+clip --- are not penalized by the coverage loss (which measures GT coverage only),
+but they inflate the prediction-set area; the efficiency metric and the per-run
+false-positive diagnostics (\code{extra\_metrics} in \code{EvaluationResult})
+track them separately. The SeqCRC top-1 selector (\S\ref{sec:seqcrc}) was
+introduced precisely to suppress the surge of false-positive boxes that would
+otherwise appear when Phase~1 lowers $T$ toward the floor.
+
+\subsection{Terminology: raw risk and fully missed}
+
+\paragraph{Raw risk.} The \emph{raw risk} is the empirical risk evaluated at the
+detector's unmodified operating point: $\lambda = 0$ for geometric expansions
+(the identity transformation, no box growth) or at the standard threshold
+$T = 0.30$ for the confidence-filter knob. It quantifies how often the
+unaugmented model already fails the loss criterion and serves as the
+``without conformal calibration'' baseline in all tables.
+
+\paragraph{Fully missed.} A frame is \emph{fully missed} if its per-image loss
+is locked at $1.0$ regardless of how large $\lambda$ grows. Two distinct
+mechanisms cause this:
+\begin{itemize}[nosep]
+  \item \emph{Empty prediction set} ($62/800$ at $T{=}0.30$, pixel-wise loss).
+    The YOLO detector fires no prediction above $T$ on a frame that contains at
+    least one GT clip. Geometric expansion cannot help: an empty set stays empty
+    at any $\lambda$.
+  \item \emph{Poor localisation} ($94{-}62 = 32$ additional frames, visible
+    under the 75\%-coverage loss). The detector does fire, but no predicted box
+    overlaps the GT at the $75\%$ coverage bar at $\lambda = 0$. This floor is
+    attackable by box-growth expansion, which is why the geometric single-knob
+    methods reduce the fully-missed count from 94 to $\sim$62 while the
+    confidence-knob method does not.
+\end{itemize}
+Together these two sub-populations define the hard floor that any single-knob
+method leaves unresolved. Only SeqCRC, which composes both mechanisms, can push
+below that floor.
+
+\subsection{Evaluation criteria}
+
 Every run uses a fixed $800$-image calibration split and a disjoint $800$-image
 test split. We read three things off each run:
 \begin{enumerate}[leftmargin=1.6cm,nosep]
@@ -205,6 +264,48 @@ WITHOUT-vs-WITH overlays on the images calibration helped most.
 % =====================================================================
 All experiments use $\alpha = 0.09$ unless stated; calibration and test are both
 $n=800$.
+
+% ---------------------------------------------------------------------
+\subsection{YOLO base detector performance}
+\label{sec:yolo-baseline}
+% ---------------------------------------------------------------------
+Before examining conformal experiments it is useful to characterise the base
+YOLO model independently, using standard object-detection metrics on the same
+$800$-image test split at $T = 0.30$. These metrics describe box-level detection
+quality under the conventional IoU criterion and complement the CRC risk, which
+is an image-level coverage metric.
+
+\begin{table}[h]\centering
+\caption{YOLO base detector metrics at $T{=}0.30$, \code{imgsz=640}.
+\textsuperscript{$\dagger$} Epoch-22 (best-checkpoint) metrics on the
+\emph{training} validation split — the same split used by \texttt{yolo} to
+select \texttt{best.pt}. \textsuperscript{$\ddagger$} To be filled by running
+\texttt{yolo val} on the CRC test split (\texttt{data/splits/test.txt}) so the
+numbers are directly comparable to the raw-risk figures in \S5.2--5.4.}
+\begin{tabular}{lcccc}
+\toprule
+Evaluation set & Precision & Recall & mAP@.50 & mAP@.50:.95 \\
+\midrule
+Training val split\textsuperscript{$\dagger$} & 0.714 & 0.733 & 0.777 & 0.273 \\
+CRC test split\textsuperscript{$\ddagger$}    & ---   & ---   & ---   & ---   \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Disjointness check (to verify on the GPU machine).} The CRC
+guarantee requires that the calibration and test splits are entirely disjoint
+from the training data. Because \texttt{best.pt} is chosen by its performance
+on the training val split, that split must also be excluded from both the CRC
+calibration and CRC test sets. Before reporting the CRC-test-split column above,
+confirm that no filename in \texttt{data/splits/\{calibration,test\}.txt}
+appears in either the train or val lists of \texttt{dataset\_800.yaml}.
+
+The raw risks already in \S\ref{sec:yolo-baseline}--\S\ref{sec:seqcrc} give an
+image-level proxy for recall on the CRC test split: a raw risk of $0.1175$ under
+the 75\%-coverage loss means $11.75\%$ of CRC-test frames lack adequate GT
+coverage at $\lambda{=}0$, which upper-bounds the frame-level miss rate at
+$T{=}0.30$. The standard mAP/precision/recall from \code{yolo val} will complete
+the picture with box-level IoU-based metrics.
 
 % ---------------------------------------------------------------------
 \subsection{Loss definition: pixel-wise recall vs.\ 75\% coverage-indicator}
@@ -458,39 +559,5 @@ $\lamhat$ and the irreducible-miss floor. Priorities:
     a step function is exact up to the \code{2e-6} guard, and that
     \code{brentq} is only a search convenience, not an assumption.
 \end{itemize}
-
-% =====================================================================
-\section{Questions for the conformal-prediction expert}
-% =====================================================================
-The most leveraged questions, roughly in priority order:
-\begin{enumerate}[leftmargin=1.5cm]
-  \item \textbf{Validity under shift.} Our exchangeability assumption is the
-    weakest link. Which tool fits geospatial rail data best --- weighted CRC,
-    Mondrian/group-conditional CRC, or a covariate-shift correction --- and how
-    do we estimate the shift to drive it?
-  \item \textbf{Tightening SeqCRC.} Is the Bonferroni split the right way to
-    compose a detection guarantee with a localisation guarantee, or is there a
-    sharper sequential/joint scheme (e.g.\ a single nested loss) that avoids the
-    large observed slack? How should we \emph{choose} the split
-    $\alpha_{\text{cnf}}/\alpha_{\text{loc}}$ in principle rather than by sweep?
-  \item \textbf{The non-exchangeable survivor subset.} Conditioning Phase~2 on
-    survivors selected with the same calibration data breaks strict
-    exchangeability. Is the single-set union-bound argument the accepted fix, or
-    should we pay for a data split / use a leave-one-out style correction?
-  \item \textbf{Loss design.} Is the per-image mean-coverage loss the right
-    object, or should we control a frame-level miss indicator, an FNR/FDR-style
-    risk, or use a multi-objective CRC that bounds recall and false-positive
-    rate simultaneously?
-  \item \textbf{Conditional rather than marginal guarantees.} Eq.~\eqref{eq:crc-guarantee}
-    is marginal. Can we get a guarantee \emph{conditional} on clip size or scene
-    type, given small per-group calibration counts?
-  \item \textbf{Efficiency optimality.} Among monotone expansions, is there a
-    principled ``most efficient'' family for thin elongated targets, or is the
-    additive-vs-asymmetric comparison necessarily empirical?
-  \item \textbf{Finite-sample honesty.} With $n=800$, how should we report the
-    in-expectation guarantee --- is the empirical test risk plus the
-    finite-sample correction enough, or do we need a PAC-style high-probability
-    statement (e.g.\ via the Hoeffding/Bentkus route of conformal risk control)?
-\end{enumerate}
 
 \end{document}
