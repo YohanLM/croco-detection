@@ -23,6 +23,7 @@ def multiplicative_expansion(
     prediction_set: torch.Tensor,
     lam: float,
     confidence_threshold: float,
+    img_size: tuple[float, float],
 ) -> torch.Tensor:
     """Implements `ExpansionFunction`.
 
@@ -40,10 +41,10 @@ def multiplicative_expansion(
     w = prediction_set[:, 2] - prediction_set[:, 0]
     h = prediction_set[:, 3] - prediction_set[:, 1]
     out = prediction_set.clone()  # carries column 4 (score) through unchanged
-    out[:, 0] -= w * lam
-    out[:, 1] -= h * lam
-    out[:, 2] += w * lam
-    out[:, 3] += h * lam
+    out[:, 0] = torch.clamp(out[:, 0] - w*lam, min=0)
+    out[:, 1] = torch.clamp(out[:, 1] - h*lam, min=0)
+    out[:, 2] = torch.clamp(out[:, 2] + w*lam, max=img_size[0])
+    out[:, 3] = torch.clamp(out[:, 3] + h*lam, max=img_size[1])
     return out
 
 

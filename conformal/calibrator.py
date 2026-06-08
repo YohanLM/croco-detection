@@ -84,6 +84,7 @@ class ExpansionFunction(Protocol):
         prediction_set: torch.Tensor,
         lam: float,
         confidence_threshold: float,
+        img_size: tuple[float, float],
     ) -> torch.Tensor: ...
 
 
@@ -390,27 +391,27 @@ class Calibrator:
         """Step 1 of inference — raw predictions for one image."""
         return self.prediction_fn(image_path, self.confidence_threshold)
 
-    def _apply_expansion(self, raw_predictions: torch.Tensor, lam: float) -> torch.Tensor:
+    def _apply_expansion(self, raw_predictions: torch.Tensor, lam: float, img_size: tuple[float, float]) -> torch.Tensor:
         """Step 2 of inference — expand a raw prediction set at margin λ.
 
         Threads `self.confidence_threshold` through, so confidence-aware
         expansions get the same value used at prediction time.
         """
-        return self.expansion_fn(raw_predictions, lam, self.confidence_threshold)
+        return self.expansion_fn(raw_predictions, lam, self.confidence_threshold, img_size)
 
-    def infer(self, image_path: str, lam: float) -> torch.Tensor:
+    def infer(self, image_path: str, lam: float, img_size: tuple[float, float]) -> torch.Tensor:
         """Runtime inference (methodology §4.3) — `_apply_expansion(_predict_raw(img), λ)`.
 
         At deployment, pass `lam = λ̂` returned by `calibrate(...)`. Pass any
         other value to probe the prediction set at a non-calibrated margin.
         """
-        return self._apply_expansion(self._predict_raw(image_path), lam)
+        return self._apply_expansion(self._predict_raw(image_path), lam, img_size)
 
     # ── calibration: predict once, expand per candidate λ ────────────────────
 
     def _collect(
         self, loader: DataLoader
-    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor],list[tuple[float, float]]]:
         """Run the predictor once over the loader; return paired lists.
 
         Uses `predict_batch` when available (one GPU call per DataLoader batch)
@@ -422,7 +423,8 @@ class Calibrator:
         use_batch = hasattr(self.prediction_fn, "predict_batch")
         preds: list[torch.Tensor] = []
         gts: list[torch.Tensor] = []
-        for paths, gt_batch in loader:
+        img_sizes: list[tuple[float, float]] = []
+        for paths, gt_batch, size_batch in loader:
             if use_batch:
                 batch_preds = self.prediction_fn.predict_batch(
                     paths, self.confidence_threshold
@@ -432,7 +434,9 @@ class Calibrator:
                 for path in paths:
                     preds.append(self._predict_raw(path))
             gts.extend(gt_batch)
-        return preds, gts
+            img_sizes.extend(size_batch)
+        return preds, gts, img_sizes
+
 
     def calibrate(
         self,
@@ -445,7 +449,7 @@ class Calibrator:
         `_apply_expansion` step that `infer` uses, so the loss measured
         here matches the loss at deployment exactly.
         """
-        preds, gts = self._collect(calibration_loader)
+        preds, gts, img_sizes = self._collect(calibration_loader)
         n = len(preds)
         if n == 0:
             raise RuntimeError("Calibration set is empty.")
@@ -453,7 +457,7 @@ class Calibrator:
         b = self.risk_fn.loss_upper_bound
 
         def crc_gap(lam: float) -> float:
-            expanded = [self._apply_expansion(p, lam) for p in preds]
+            expanded = [self._apply_expansion(p, lam, size) for p, size in zip(preds, img_sizes)]
             empirical_risk = self.risk_fn(expanded, gts)
             return crc_finite_sample_correction(empirical_risk, n, b) - self.alpha
 
@@ -484,6 +488,7 @@ class Calibrator:
         self,
         preds: list[torch.Tensor],
         gts: list[torch.Tensor],
+        img_sizes: list[tuple[float, float]],
         lambdas: Iterable[float],
     ) -> list[tuple[float, float]]:
         """`R̂(λ)` over a λ sweep on already-collected predictions.
@@ -493,7 +498,7 @@ class Calibrator:
         """
         curve = []
         for lam in lambdas:
-            expanded = [self._apply_expansion(p, float(lam)) for p in preds]
+            expanded = [self._apply_expansion(p, float(lam),size) for p, size in zip(preds, img_sizes)]
             curve.append((float(lam), self.risk_fn(expanded, gts)))
         return curve
 
@@ -535,12 +540,12 @@ class Calibrator:
             injected `risk_fn` / per-image loss only, so it works for any loss
             (pixel, coverage-indicator, …) without modification.
         """
-        preds, gts = self._collect(loader)
+        preds, gts, img_sizes = self._collect(loader)
         n = len(preds)
         if n == 0:
             raise RuntimeError("Evaluation set is empty.")
 
-        expanded = [self._apply_expansion(p, lam) for p in preds]
+        expanded = [self._apply_expansion(p, lam,size) for p, size in zip(preds, img_sizes)]
         per_image_losses = [
             self.risk_fn.loss_fn(e, g) for e, g in zip(expanded, gts)
         ]
@@ -554,7 +559,7 @@ class Calibrator:
 
         curve = None
         if risk_curve_lambdas is not None:
-            curve = self._risk_curve(preds, gts, risk_curve_lambdas)
+            curve = self._risk_curve(preds, gts,img_sizes,risk_curve_lambdas)
 
         extra = None
         if extra_metrics:

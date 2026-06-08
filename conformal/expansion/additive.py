@@ -22,6 +22,7 @@ def additive_expansion(
     prediction_set: torch.Tensor,
     lam: float,
     confidence_threshold: float,
+    img_size: tuple[float, float],
 ) -> torch.Tensor:
     """Implements `ExpansionFunction`.
 
@@ -36,10 +37,10 @@ def additive_expansion(
     if prediction_set.numel() == 0:
         return prediction_set
     out = prediction_set.clone()  # carries column 4 (score) through unchanged
-    out[:, 0] -= lam
-    out[:, 1] -= lam
-    out[:, 2] += lam
-    out[:, 3] += lam
+    out[:, 0] = torch.clamp(out[:, 0] - lam, min=0)
+    out[:, 1] = torch.clamp(out[:, 1] - lam, min=0)
+    out[:, 2] = torch.clamp(out[:, 2] + lam, max=img_size[0])
+    out[:, 3] = torch.clamp(out[:, 3] + lam, max=img_size[1])
     return out
 
 

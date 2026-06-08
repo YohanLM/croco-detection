@@ -103,7 +103,7 @@ def _read_split(split_file: PathLike) -> list[Path]:
 
 
 class CalibrationDataset(Dataset):
-    """Yields `(image_path: str, gt_xyxy_pixels: Tensor[N, 4])` per sample."""
+    """Yields `(image_path: str, gt_xyxy_pixels: Tensor[N, 4]), img_size: tuple[int, int])` per sample."""
 
     def __init__(self, split_file: PathLike) -> None:
         self.image_paths = _read_split(split_file)
@@ -116,11 +116,11 @@ class CalibrationDataset(Dataset):
         gt_norm = _parse_yolo_label(_label_path_for(img_path))
         img_w, img_h = _image_dims(img_path)
         gt_xyxy = yolo_norm_to_xyxy(gt_norm, img_w, img_h)
-        return str(img_path), gt_xyxy
+        return str(img_path), gt_xyxy, (img_w, img_h)
 
 
 class PredictionDataset(Dataset):
-    """Yields just `image_path: str` per sample — no labels needed."""
+    """Yields just `image_path: str, img_size: tuple[int, int])` per sample — no labels needed."""
 
     def __init__(self, split_file: PathLike) -> None:
         self.image_paths = _read_split(split_file)
@@ -128,16 +128,18 @@ class PredictionDataset(Dataset):
     def __len__(self) -> int:
         return len(self.image_paths)
 
-    def __getitem__(self, idx: int) -> str:
-        return str(self.image_paths[idx])
+    def __getitem__(self, idx: int) -> tuple[str, tuple[int, int]]:
+        img_path = self.image_paths[idx]
+        img_w, img_h = _image_dims(img_path)
+        return str(img_path), (img_w, img_h)
 
 
 # ── Loaders ──────────────────────────────────────────────────────────────────
 
 def _collate_with_gt(batch):
     """Keep variable-length GT tensors as a list — don't stack."""
-    paths, gts = zip(*batch)
-    return list(paths), list(gts)
+    paths, gts,sizes = zip(*batch)
+    return list(paths), list(gts), list(sizes)
 
 
 def make_calibration_loader(
@@ -146,7 +148,7 @@ def make_calibration_loader(
     shuffle: bool = False,
     num_workers: int = 0,
 ) -> DataLoader:
-    """Loader over `(image_path, gt_xyxy_pixels)` — for Calibrator / evaluation."""
+    """Loader over `(image_path, gt_xyxy_pixels, img_size)` — for Calibrator / evaluation."""
     return DataLoader(
         CalibrationDataset(split_file),
         batch_size=batch_size,
