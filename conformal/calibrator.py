@@ -179,6 +179,7 @@ class EvaluationResult:
     risk_curve: list[tuple[float, float]] | None = None
     # Optional non-loss diagnostics (e.g. FP/TP counts): name -> per-image list.
     extra: dict[str, list[float]] | None = None
+    stretch: float | None = None
 
     @property
     def coverage_satisfied(self) -> bool:
@@ -270,6 +271,8 @@ class EvaluationResult:
             if self.inflation_ratio is not None:
                 lines.append(f"  {'inflation ratio':<22}: "
                              f"{self.inflation_ratio:.2f}x")
+            if self.stretch is not None:
+                lines.append(f"  {'mean stretch':<22}: {self.stretch:.4f}x")
         if self.extra:
             totals = self.extra_totals
             means = self.extra_means
@@ -568,6 +571,17 @@ class Calibrator:
                 for name, fn in extra_metrics.items()
             }
 
+        stretches  = []
+        for p, e in zip(preds, expanded):
+            if p.numel() == 0:
+                continue
+            a_f = (p[:, 2] - p[:, 0] + 1) * (p[:, 3] - p[:, 1] + 1)
+            a_c = (e[:, 2] - e[:, 0] + 1) * (e[:, 3] - e[:, 1] + 1)
+            ratios = a_c / torch.clamp(a_f, min=1e-8)
+            stretches .extend(ratios.tolist())
+ 
+        stretch = sum(stretches ) / len(stretches ) if stretches  else 1.0
+
         return EvaluationResult(
             lam=float(lam),
             alpha=self.alpha,
@@ -580,6 +594,7 @@ class Calibrator:
             mean_raw_efficiency=mean_raw_eff,
             risk_curve=curve,
             extra=extra,
+            stretch=stretch
         )
 
 
