@@ -65,11 +65,12 @@ def build_survivor_split(
 ) -> tuple[int, int, Path]:
     """Write the Phase-2 survivor split and return `(n_total, n_loc, path)`.
 
-    A frame survives iff it has at least one valid GT and the Phase-1
-    detection-miss loss is `0` at `t_eff` (every target was hit, so a box
-    exists for Phase 2 to expand). Frames with no GT, or with any
-    unrecovered target, are excluded — the latter are already charged to
-    Phase 1 and would otherwise lock the Phase-2 loss at 1.0.
+    A frame survives iff the Phase-1 detection-miss loss is `0` at `t_eff`.
+    Frames with no GT are included: if the detector fires on an empty image
+    (false alarm) and `detection_loss_fn` returns 1, the frame fails Phase 1
+    and is correctly charged to the Phase-1 empirical risk. Excluding empty
+    frames would silently drop that risk contribution, making the Phase-1
+    bound anti-conservative.
 
     The detector is run once per frame at `t_eff`; these are precisely the
     boxes that clear the Phase-1 threshold.
@@ -79,11 +80,10 @@ def build_survivor_split(
     n_total = len(dataset)
     use_batch = hasattr(predictor, "predict_batch")
 
-    # Collect only frames that have GT (frames without GT are skipped regardless).
+    # All frames, including those with empty GT, are evaluated by the loss.
     frames: list[tuple[str, torch.Tensor]] = [
         (dataset[i][0], dataset[i][1])
         for i in range(n_total)
-        if dataset[i][1].numel() > 0
     ]
 
     batch_size = 16
