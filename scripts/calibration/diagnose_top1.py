@@ -54,20 +54,29 @@ from conformal.loss.detection import (
     nonzero_overlap_hit,
 )
 from conformal.prediction.yolo import YoloPredictor
-from conformal.seqcrc import effective_threshold
 
 # Reuse the pipeline's CONFIG so the diagnostic matches what we'd deploy.
 from calibrate_seqcrc import (
-    ALPHA,
-    ALPHA_CNF_FRACTION,
-    CONF_FLOOR,
-    CONF_LAMBDA_RANGE,
-    HIT_CRITERION,
-    IOU_MATCH,
+    ALPHA_CNF,
+    PREFILTER,
     SPLITS,
     WEIGHTS,
 )
 from crc_common import _Tee, check_paths, count_lines, rule
+
+
+# This diagnostic measures the top-1 hit rate that lower-bounds the confidence
+# step's feasible FNR budget; it predates the FNR loss and keeps its own
+# overlap/IoU hit notion. Local config (decoupled from the new pipeline knobs).
+CONF_FLOOR = PREFILTER             # detector admission floor
+CONF_LAMBDA_RANGE = (0.0, 1.0)     # confidence parameter space
+HIT_CRITERION = "overlap"          # "overlap" | "iou"
+IOU_MATCH = 0.10                   # used only when HIT_CRITERION == "iou"
+
+
+def effective_threshold(confidence_floor: float, lambda_cnf: float) -> float:
+    """Confidence step's effective cutoff `max(floor, 1 - lambda_cnf)`."""
+    return max(confidence_floor, 1.0 - lambda_cnf)
 
 
 def _hit_fn():
@@ -123,14 +132,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _run(out_dir: Path) -> None:
     calib_path = SPLITS / "calibration.txt"
-    alpha_cnf = ALPHA * ALPHA_CNF_FRACTION
+    alpha_cnf = ALPHA_CNF
     hit_fn, hit_label = _hit_fn()
     detection_loss = make_detection_miss_loss(hit_fn)
 
     rule("CONFIG")
     print(f"  weights              : {WEIGHTS}")
     print(f"  calibration split    : {calib_path}")
-    print(f"  alpha / alpha_cnf    : {ALPHA} / {alpha_cnf:.4f}")
+    print(f"  alpha_cnf            : {alpha_cnf:.4f}")
     print(f"  confidence floor     : {CONF_FLOOR}")
     print(f"  hit criterion        : {hit_label}")
     check_paths(WEIGHTS, calib_path)

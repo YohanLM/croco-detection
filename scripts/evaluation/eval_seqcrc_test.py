@@ -48,9 +48,11 @@ WEIGHTS  = ROOT / "models" / "best.pt"
 TEST_TXT = ROOT / "data" / "splits" / "test.txt"
 DEVICE   = "cuda"
 
-# --- calibrated values from seqcrc_09_top1_3 ---
-T_EFF      = 0.0994   # max(0.001, 1 - 0.9006)
-LAMBDA_LOC = 0.4379   # px per side (additive expansion)
+# --- calibrated values from the two-step SeqCRC run (calibrate_seqcrc.py) ---
+LAMBDA_CNF = 0.9006   # confidence threshold parameter: keep conf >= 1 - lambda_cnf
+LAMBDA_LOC = 0.4379   # localization margin (additive, px per side)
+MARGIN_MODE = "additive"
+PREFILTER   = 1e-3
 
 COVERAGE_THRESHOLD = 0.75
 
@@ -85,7 +87,13 @@ def main() -> None:
     base     = YoloPredictor(str(WEIGHTS))
     base.model.to(DEVICE)
     top1     = TopKPredictor(base, k=1)
-    pipeline = SeqCRCInferencer(predictor=top1, t_eff=T_EFF, lambda_loc=LAMBDA_LOC)
+    pipeline = SeqCRCInferencer(
+        predictor=top1,
+        lambda_cnf_plus=LAMBDA_CNF,
+        lambda_loc_plus=LAMBDA_LOC,
+        prefilter=PREFILTER,
+        margin_mode=MARGIN_MODE,
+    )
 
     dataset  = CalibrationDataset(TEST_TXT)
     counts   = {"TP": 0, "FP": 0, "FN": 0, "TN": 0}
@@ -123,7 +131,7 @@ def main() -> None:
 
     print(f"\n{'='*60}")
     print(f"SeqCRC pipeline  —  test split  (n={n})")
-    print(f"  T_eff={T_EFF}  lambda_loc={LAMBDA_LOC} px  top-k=1")
+    print(f"  lambda_cnf={LAMBDA_CNF}  lambda_loc={LAMBDA_LOC} px  top-k=1")
     print(f"Coverage criterion: ≥{int(COVERAGE_THRESHOLD*100)}% of GT pixels covered")
     print(f"{'='*60}")
     print(f"  Positive images (has clip) : {n_pos}")

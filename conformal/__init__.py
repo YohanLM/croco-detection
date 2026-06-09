@@ -33,9 +33,20 @@ from conformal.loss import (
 )
 from conformal.prediction import ModelLike, TopKPredictor, YoloPredictor
 from conformal.seqcrc import (
+    CalibrationResult,
+    MarginMode,
+    SeqCRCConfig,
     SeqCRCInferencer,
-    build_survivor_split,
-    effective_threshold,
+    calibrate,
+    calibrate_confidence,
+    calibrate_localization,
+    collect_predictions,
+    confidence_risk,
+    confidence_set,
+    l_cnf_image,
+    l_loc_image,
+    localization_risk,
+    localization_set,
 )
 from conformal.smoothing import (
     CertifiedPrediction,
@@ -84,9 +95,20 @@ __all__ = [
     "image_pixel_loss",
     "pixel_risk",
     # seqcrc
+    "SeqCRCConfig",
+    "MarginMode",
     "SeqCRCInferencer",
-    "build_survivor_split",
-    "effective_threshold",
+    "CalibrationResult",
+    "calibrate",
+    "calibrate_confidence",
+    "calibrate_localization",
+    "collect_predictions",
+    "confidence_risk",
+    "localization_risk",
+    "confidence_set",
+    "localization_set",
+    "l_cnf_image",
+    "l_loc_image",
     # smoothing
     "SmoothedTop1Predictor",
     "SmoothingSamples",
