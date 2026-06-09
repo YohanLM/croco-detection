@@ -7,3 +7,5 @@ matplotlib==3.10.9
 PyYAML==6.0.3
 python-dotenv==1.2.2
 opencv-python==4.13.0.92
+deel-torchlip  # 1-Lipschitz layers + HKR loss for the lipschitz/ clip classifier
+               # (pin a version compatible with the installed torch on the server)

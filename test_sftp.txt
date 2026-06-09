@@ -1,3 +1,0 @@
-test for sftp connexion
-and test for the other way round
-and another test for good measure

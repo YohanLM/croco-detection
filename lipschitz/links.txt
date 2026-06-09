@@ -1,0 +1,3 @@
+https://github.com/deel-ai/deel-torchlip
+https://colab.research.google.com/github/deel-ai/deel-torchlip/blob/master/docs/notebooks/wasserstein_classification_MNIST08.ipynb
+https://github.com/deel-ai/orthogonium/blob/main/orthogonium/model_factory/models_factory.py
