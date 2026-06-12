@@ -41,16 +41,16 @@ def _plot_curves(history, path: Path) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    epochs = range(1, len(history.train_loss) + 1)
+    epochs = range(1, len(history.train["loss"]) + 1)
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
-    ax[0].plot(epochs, history.train_loss, label="train")
-    ax[0].plot(epochs, history.val_loss, label="val")
+    ax[0].plot(epochs, history.train["loss"], label="train")
+    ax[0].plot(epochs, history.val["loss"], label="val")
     ax[0].set_title("HKR loss"); ax[0].set_xlabel("epoch"); ax[0].legend()
-    ax[1].plot(epochs, history.train_acc, label="train")
-    ax[1].plot(epochs, history.val_acc, label="val")
+    ax[1].plot(epochs, history.train["acc"], label="train")
+    ax[1].plot(epochs, history.val["acc"], label="val")
     ax[1].set_title("accuracy"); ax[1].set_xlabel("epoch"); ax[1].legend()
-    ax[2].plot(epochs, history.train_kr, label="train")
-    ax[2].plot(epochs, history.val_kr, label="val")
+    ax[2].plot(epochs, history.train["KR"], label="train")
+    ax[2].plot(epochs, history.val["KR"], label="val")
     ax[2].set_title("KR (margin)"); ax[2].set_xlabel("epoch"); ax[2].legend()
     fig.tight_layout()
     fig.savefig(path, dpi=120)
@@ -100,10 +100,18 @@ def main() -> None:
     model = build_lip_classifier(
         in_ch=config["in_ch"], widths=config["widths"], head_pool=config["head_pool"]
     )
+
+    # Loss + logged margin metric. To experiment with architectures and a custom
+    # loss instead, use scripts/lipschitz/experiment.py — this script is the fixed
+    # HKR baseline trainer that also persists checkpoints.
+    from deel.torchlip import HKRLoss, KRLoss
+    hkr_loss = HKRLoss(alpha=args.alpha, min_margin=args.min_margin)
+    kr_loss = KRLoss()
+
     model, history = train(
-        model, train_loader, val_loader,
-        epochs=args.epochs, alpha=args.alpha, min_margin=args.min_margin,
-        lr=args.lr, device=args.device,
+        model, train_loader, val_loader, hkr_loss,
+        epochs=args.epochs, lr=args.lr, device=args.device,
+        extra_metrics={"KR": lambda out, tgt: float(kr_loss(out, tgt))},
     )
 
     # 3. Persist: config, best weights, vanilla export, curves, results.
@@ -116,7 +124,7 @@ def main() -> None:
 
     _plot_curves(history, args.out / "curves.png")
 
-    best_val = max(history.val_acc)
+    best_val = max(history.val["acc"])
     (args.out / "results.txt").write_text(
         "1-Lipschitz HKR clip classifier — training\n"
         f"image size       : {h}x{w}\n"
@@ -127,7 +135,7 @@ def main() -> None:
         f"alpha / margin   : {args.alpha} / {args.min_margin}\n"
         f"lr / batch       : {args.lr} / {args.batch_size}\n"
         f"best val acc     : {best_val:.4f}\n"
-        f"final val KR     : {history.val_kr[-1]:.4f}\n"
+        f"final val KR     : {history.val['KR'][-1]:.4f}\n"
     )
     print(f"Done. Artifacts in {args.out}")
 

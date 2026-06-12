@@ -1,37 +1,45 @@
-"""Training and evaluation loops for the 1-Lipschitz clip classifier.
+"""Training and evaluation loops for the clip presence classifier.
 
-A faithful port of section 3 of the MNIST 0-vs-8 notebook: HKR loss + Adam, logging
-the Kantorovich-Rubinstein term, the hinge term, and accuracy each epoch on both
-train and validation. The only structural change is bookkeeping — we keep the
-best-validation-accuracy weights and return a ``history`` for plotting.
+The loss is **not** baked in here — you pass a ``loss_fn`` (and, optionally, extra
+per-batch metrics to log). That keeps the choice of objective yours: HKR, plain
+hinge / KR, BCE, anything that maps ``(output[B,1], target[B]) -> scalar``. The loop
+only owns bookkeeping: it records loss + accuracy (plus any extra metrics) each
+epoch on train and val, and keeps the best-validation-accuracy weights.
 
-The ``HKRLoss(alpha, min_margin)`` trades off the KR term (which *maximises* the
-margin / Wasserstein-1 separation) against the hinge term (which enforces a minimum
-margin), exactly as in the reference notebook. A larger ``alpha`` (→1) weights the
-hinge more; ``min_margin`` sets the target margin.
+Targets follow the ``{+1, -1}`` convention from ``lipschitz.data`` (clip / no-clip),
+which is what the Wasserstein-style losses expect; accuracy is ``sign(output)``.
 """
 
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
+from typing import Callable, Mapping
 
 import torch
 from torch.utils.data import DataLoader
 
 from lipschitz.metrics import binary_accuracy, certified_accuracy_curve, confusion_counts
 
+LossFn = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+MetricFn = Callable[[torch.Tensor, torch.Tensor], float]
+
 
 @dataclass
 class History:
-    """Per-epoch training/validation metrics, for plotting and the results file."""
+    """Per-epoch metrics. ``train``/``val`` are dicts keyed by metric name.
 
-    train_loss: list[float] = field(default_factory=list)
-    train_kr: list[float] = field(default_factory=list)
-    train_acc: list[float] = field(default_factory=list)
-    val_loss: list[float] = field(default_factory=list)
-    val_kr: list[float] = field(default_factory=list)
-    val_acc: list[float] = field(default_factory=list)
+    Always contains ``"loss"`` and ``"acc"``; any names in ``extra_metrics`` passed
+    to ``train`` are added as further keys. Each value is a list (one per epoch).
+    """
+
+    train: dict[str, list[float]] = field(default_factory=dict)
+    val: dict[str, list[float]] = field(default_factory=dict)
+
+    def _append(self, side: str, values: Mapping[str, float]) -> None:
+        target = self.train if side == "train" else self.val
+        for k, v in values.items():
+            target.setdefault(k, []).append(float(v))
 
 
 def _evaluate_outputs(model, loader: DataLoader, device) -> tuple[torch.Tensor, torch.Tensor]:
@@ -50,24 +58,27 @@ def train(
     model,
     train_loader: DataLoader,
     val_loader: DataLoader,
+    loss_fn: LossFn,
     *,
     epochs: int = 30,
-    alpha: float = 0.98,
-    min_margin: float = 1.0,
     lr: float = 1e-3,
     device: str | torch.device = "cpu",
+    extra_metrics: Mapping[str, MetricFn] | None = None,
     verbose: bool = True,
 ) -> tuple[object, History]:
-    """Train with HKR loss; return ``(best_model, history)``.
+    """Train with the supplied ``loss_fn``; return ``(best_model, history)``.
 
-    ``best_model`` is ``model`` with the best-validation-accuracy weights loaded back
-    in (``model`` is also mutated in place to those weights).
+    Args:
+        loss_fn:       your objective, ``(output[B,1], target[B]) -> scalar tensor``.
+        extra_metrics: optional ``name -> fn(output, target) -> float`` logged each
+                       epoch alongside loss/accuracy (e.g. the KR / margin term).
+        epochs, lr:    Adam optimisation hyper-parameters.
+
+    ``best_model`` is ``model`` with the best-val-accuracy weights reloaded (``model``
+    is also mutated in place to those weights).
     """
-    from deel.torchlip import HKRLoss, KRLoss
-
+    extra_metrics = dict(extra_metrics or {})
     model = model.to(device)
-    hkr_loss = HKRLoss(alpha=alpha, min_margin=min_margin)
-    kr_loss = KRLoss()
     optimizer = torch.optim.Adam(lr=lr, params=model.parameters())
 
     history = History()
@@ -76,42 +87,45 @@ def train(
 
     for epoch in range(epochs):
         model.train()
-        m_kr = m_acc = run_loss = 0.0
+        run = {"loss": 0.0, "acc": 0.0, **{k: 0.0 for k in extra_metrics}}
         n_batches = 0
         for data, target in train_loader:
             data, target = data.to(device), target.to(device)
             optimizer.zero_grad()
             output = model(data)
-            loss = hkr_loss(output, target)
+            loss = loss_fn(output, target)
             loss.backward()
             optimizer.step()
 
-            run_loss += float(loss)
-            m_kr += float(kr_loss(output, target))
-            m_acc += binary_accuracy(output, target)
+            run["loss"] += float(loss)
+            run["acc"] += binary_accuracy(output, target)
+            for name, fn in extra_metrics.items():
+                run[name] += float(fn(output, target))
             n_batches += 1
 
-        history.train_loss.append(run_loss / n_batches)
-        history.train_kr.append(m_kr / n_batches)
-        history.train_acc.append(m_acc / n_batches)
+        history._append("train", {k: v / n_batches for k, v in run.items()})
 
         val_out, val_tgt = _evaluate_outputs(model, val_loader, device)
-        history.val_loss.append(float(hkr_loss(val_out, val_tgt)))
-        history.val_kr.append(float(kr_loss(val_out, val_tgt)))
-        v_acc = binary_accuracy(val_out, val_tgt)
-        history.val_acc.append(v_acc)
+        val_row = {
+            "loss": float(loss_fn(val_out, val_tgt)),
+            "acc": binary_accuracy(val_out, val_tgt),
+        }
+        for name, fn in extra_metrics.items():
+            val_row[name] = float(fn(val_out, val_tgt))
+        history._append("val", val_row)
 
+        v_acc = val_row["acc"]
         if v_acc >= best_acc:
             best_acc = v_acc
             best_state = copy.deepcopy(model.state_dict())
 
         if verbose:
+            extra = " ".join(f"{k}: {history.train[k][-1]:.4f}" for k in extra_metrics)
             print(
                 f"Epoch {epoch + 1}/{epochs} - "
-                f"loss: {history.train_loss[-1]:.4f} - KR: {history.train_kr[-1]:.4f} - "
-                f"acc: {history.train_acc[-1]:.4f} - "
-                f"val_loss: {history.val_loss[-1]:.4f} - val_KR: {history.val_kr[-1]:.4f} - "
-                f"val_acc: {v_acc:.4f}"
+                f"loss: {history.train['loss'][-1]:.4f} - acc: {history.train['acc'][-1]:.4f} - "
+                f"{extra}{' - ' if extra else ''}"
+                f"val_loss: {val_row['loss']:.4f} - val_acc: {v_acc:.4f}"
             )
 
     model.load_state_dict(best_state)
@@ -133,7 +147,8 @@ def evaluate(
             Defaults to ``linspace(0, 1, 21)``.
 
     Returns a dict with ``outputs``/``targets`` (flat tensors), ``accuracy``, the four
-    confusion counts, ``radii`` and ``certified_accuracy`` (aligned lists).
+    confusion counts, ``radii`` and ``certified_accuracy`` (aligned lists). Certified
+    figures are only meaningful for a 1-Lipschitz backend.
     """
     if radii is None:
         radii = torch.linspace(0.0, 1.0, 21)
